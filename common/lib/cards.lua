@@ -29,7 +29,10 @@ end
 -- presses a button on the same frame twice.
 local rngState = 0x9E3779B9
 function M.stir(n)
-  rngState = (rngState + (n or 0) * 2654435761 + love.math.random(2 ^ 30)) % 4294967296
+  -- floor: a fractional n (e.g. a time value) would make rngState lose its
+  -- integer representation and crash the xorshift's bitwise ops later.
+  n = math.floor(n or 0)
+  rngState = (rngState + n * 2654435761 + love.math.random(2 ^ 30)) % 4294967296
   if rngState == 0 then rngState = 0x9E3779B9 end
 end
 local function rnd(n)          -- xorshift32 -> 1..n
@@ -40,6 +43,8 @@ local function rnd(n)          -- xorshift32 -> 1..n
   rngState = x % 4294967296
   return (rngState % n) + 1
 end
+M.rand = rnd   -- exposed for carts whose deck model isn't the 52-card one
+               -- (deck-builders inject this into their own shuffle)
 
 -- a fresh 52-card deck
 function M.newDeck()
