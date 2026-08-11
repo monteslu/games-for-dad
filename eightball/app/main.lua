@@ -1004,9 +1004,17 @@ function love.draw()
   -- which read as the ball sinking under the hole while still in play.
   love.graphics.setDepthMode()
   love.graphics.setMeshCullMode("none")
-  drawPockets()
-
-  -- CONTACT SHADOWS, between the cloth and the balls.
+  -- CONTACT SHADOWS. Drawn on the cloth BEFORE the pockets.
+  --
+  -- Order is load-bearing. A shadow is offset from its ball (away from the
+  -- lamp), so a ball sitting BESIDE a pocket throws its shadow ACROSS the
+  -- hole -- and a hole has no cloth to receive one. Painted after the
+  -- pockets, that shadow smeared over the pocket's dark surround and read
+  -- as a dirty patch on the ball's lower edge. The suppression test below
+  -- cannot fix it: the BALL is legitimately on cloth, it is the SHADOW
+  -- that is not. Drawing the pockets last lets the hole paint over any
+  -- shadow that strays onto it, which is also what actually happens -- the
+  -- hole is nearer the eye than the cloth the shadow lies on.
   --
   -- This is the single thing that stops a rendered ball reading as a flat
   -- disc floating over the felt, and it is the one piece of a sphere's
@@ -1075,6 +1083,8 @@ function love.draw()
     end
     g.setColor(1, 1, 1)
   end
+
+  drawPockets()
 
   -- PASS 2: the balls, on top of everything.
   dream:prepare()
