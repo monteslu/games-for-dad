@@ -746,12 +746,30 @@ function drawPockets()
   for _, p in ipairs(tbl.pockets()) do
     local sx, sy = worldToScreen(p.x, p.z)
     if sx then
-      -- a soft dark halo so the mouth sits INTO the cloth
-      g.setColor(0.02, 0.05, 0.03, 0.55)
-      g.circle("fill", sx, sy, rad * 1.22)
-      -- the hole
-      g.setColor(0.03, 0.03, 0.035)
-      g.circle("fill", sx, sy, rad)
+      -- The hole, drawn OPAQUE in concentric rings rather than as a
+      -- translucent halo. Alpha after the 3D pass is not reliable across
+      -- backends -- on Android the translucent version came out as a faint
+      -- outline with no hole at all -- and a pocket a player cannot see is
+      -- a pocket they cannot aim at.
+      -- A POLYGON, not circle("fill").
+      --
+      -- The engine evaluates a filled circle per fragment from
+      -- gl_FragCoord, which is viewport-relative -- and after 3Dream's pass
+      -- the viewport is not the screen's, so the coverage test fails and
+      -- the fill silently vanishes while ordinary line geometry still
+      -- draws. A triangle fan is plain geometry and immune to that.
+      local function disc(r, cr, cg, cb)
+        local pts, N = {}, 28
+        for i = 0, N - 1 do
+          local a = i / N * math.pi * 2
+          pts[#pts + 1] = sx + math.cos(a) * r
+          pts[#pts + 1] = sy + math.sin(a) * r
+        end
+        g.setColor(cr, cg, cb)
+        g.polygon("fill", pts)
+      end
+      disc(rad * 1.20, 0.055, 0.10, 0.06)
+      disc(rad, 0.02, 0.02, 0.025)
       -- a brass lip catching the overhead lamp
       g.setColor(0.42, 0.34, 0.16, 0.85)
       g.setLineWidth(math.max(2, rad * 0.14))
@@ -814,25 +832,31 @@ function drawHUD()
   -- as a different object. The active player's panel is lit gold; the
   -- other recedes. That is the whole "whose turn is it" signal, in the
   -- place a player is already looking.
+  -- Polygons rather than circle("fill") -- see drawPockets for why a filled
+  -- circle silently disappears after the 3D pass.
+  local function disc(x, y, r, cr, cg, cb)
+    local pts, N = {}, 22
+    for i = 0, N - 1 do
+      local a = i / N * math.pi * 2
+      pts[#pts + 1] = x + math.cos(a) * r
+      pts[#pts + 1] = y + math.sin(a) * r
+    end
+    g.setColor(cr, cg, cb)
+    g.polygon("fill", pts)
+  end
+
   local function ballChip(num, x, y, rad)
     local c = ballart.COLORS[num]
     if not c then return end
     if ballart.isStripe(num) then
-      g.setColor(0.95, 0.94, 0.90)
-      g.circle("fill", x, y, rad)
+      disc(x, y, rad, 0.95, 0.94, 0.90)
       g.setColor(c[1], c[2], c[3])
       g.rectangle("fill", x - rad, y - rad * 0.44, rad * 2, rad * 0.88)
     else
-      g.setColor(c[1], c[2], c[3])
-      g.circle("fill", x, y, rad)
+      disc(x, y, rad, c[1], c[2], c[3])
     end
     -- a highlight in the same place the 3D balls carry theirs
-    g.setColor(1, 1, 1, 0.5)
-    g.circle("fill", x - rad * 0.3, y - rad * 0.34, rad * 0.26)
-    g.setColor(0, 0, 0, 0.4)
-    g.setLineWidth(2)
-    g.circle("line", x, y, rad)
-    g.setLineWidth(1)
+    disc(x - rad * 0.3, y - rad * 0.34, rad * 0.22, 1, 1, 1)
   end
 
   -- The panels live in the band ABOVE the table, side by side, where there
@@ -841,7 +865,10 @@ function drawHUD()
     local active = (state.turn == seat and state.phase ~= "over")
     local py, pw, ph = 22, 470, 128
     -- the panel itself
-    g.setColor(0, 0, 0, 0.42)
+    -- opaque, for the same reason the pockets are: alpha after the 3D pass
+    -- is not dependable across backends, and a panel that reads as solid on
+    -- the desktop should not wash out on the phone
+    g.setColor(0.045, 0.045, 0.055)
     g.rectangle("fill", px, py, pw, ph, 14, 14)
     if active then
       g.setColor(theme.gold[1], theme.gold[2], theme.gold[3], 0.95)
