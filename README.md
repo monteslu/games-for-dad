@@ -23,8 +23,15 @@ wasmcart player runs.
 npx wasmcart jacksorbetter/jacksorbetter.wasc
 ```
 
-The carts are 1920x1080 and need a wasmcart player new enough to honor
-cart resolution.
+The carts are 1920x1080 and declare it in their own `conf.lua`, so they
+render the same on any engine build.
+
+**On Android**, each game is its own app. `wasmcart-android-lua` turns a
+cart into an installable APK -- `./build-game-apk.sh <game>.wasc` -- using
+the `icon.png` beside the cart for the launcher icon and the cart's
+manifest for the app's name and version. Those builds run the engine as
+native code rather than wasm: about 6 MB per game instead of 64, at a
+locked 60 fps.
 
 Controls, in every game:
 
@@ -32,7 +39,16 @@ Controls, in every game:
   the gold highlight.
 - **South or east face button** confirms. Both always work; there is no
   wrong confirm button.
-- That is the entire scheme.
+- That is the entire pad scheme.
+
+**Touch is an equal path, not an afterthought.** On a phone or tablet the
+pad does not exist, so every game takes taps for everything: tap a card to
+pick it, tap the big gold button to commit it (PLAY / DRAW / DEAL /
+CHECK / BET / FOLD), tap the bid spinner's left and right thirds in
+Spades. Buttons are spread out with dead space between them because a
+wrong tap costs a hand, and every press lands on screen the instant it
+happens -- a silent half second reads as a dead button. All ten pointer
+slots are polled, so touch works, not just a mouse.
 
 Money rules, in every poker game: $1000 stack, $5 flat bet, and the
 bankroll can never bust. If you cannot cover the next bet, the house
@@ -42,7 +58,11 @@ mapped onto the scoreboard (wins loud, losses quiet, nothing shames).
 
 ## Repo layout
 
-- `<game>/app/` - the game's Lua source and assets (self-contained)
+- `<game>/app/` - the game's Lua source and assets (self-contained),
+  including a `conf.lua` declaring the cart's 1920x1080
+- `<game>/icon.png` - launcher icon for the Android build (1024 adaptive
+  foreground)
+- `tools/` - headless drivers used to verify a change without a device
 - `<game>/main.wasm` - the wasmcart-lua engine the cart ships with
 - `<game>/<game>.wasc` - the packed, playable cart
 - `common/` - the shared card-table library and assets the games are

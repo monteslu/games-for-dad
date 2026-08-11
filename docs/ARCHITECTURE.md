@@ -17,7 +17,22 @@ wasmcart player                    any host that implements the wasmcart
 ```
 
 The engine ships INSIDE each cart, so a `.wasc` is fully self-contained:
-one file, no install, same behavior on every host. If the engine gets a
+one file, no install, same behavior on every host.
+
+Two caveats learned the hard way:
+
+- **A cart must declare its own resolution in `conf.lua`.** The bundled
+  engine's default is not a contract; carts that leaned on it broke when a
+  newer engine defaulted differently.
+- **The bundled engine can drift between carts.** These four shipped with
+  two different `main.wasm` builds for a while, which is invisible until
+  one game behaves unlike its siblings. `md5 */main.wasm` is the check.
+
+On Android the carts are also run by a NATIVE build of the same engine
+(`wasmcart-android-lua`), which reads the asset tree out of the `.wasc`
+and ignores the `main.wasm` inside it. Same cart file, ~10x smaller app.
+That runtime is verified bit-exact against the wasm engine, so the cart
+stays the single artifact. If the engine gets a
 fix, carts must be repacked to pick it up.
 
 Carts declare their resolution in the manifest (these are 1920x1080) and
