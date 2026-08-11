@@ -33,6 +33,24 @@ local U = tbl.U
 -- A unit circle, tabulated ONCE. The contact-shadow pass draws 3 rings for
 -- each of 16 balls at 22 points apiece -- 1056 sin/cos calls a frame for a
 -- shape that never changes.
+-- Pocket discs: 28 segments, their own table (the shadow rings use 22).
+local DISC_N = 28
+local DISC_COS, DISC_SIN = {}, {}
+for i = 1, DISC_N do
+  local a = (i - 1) / DISC_N * math.pi * 2
+  DISC_COS[i] = math.cos(a)
+  DISC_SIN[i] = math.sin(a)
+end
+local discPts = {}
+local function pocketDisc(sx, sy, r, cr, cg, cb)
+  for i = 1, DISC_N do
+    discPts[i * 2 - 1] = sx + DISC_COS[i] * r
+    discPts[i * 2]     = sy + DISC_SIN[i] * r
+  end
+  love.graphics.setColor(cr, cg, cb)
+  love.graphics.polygon("fill", discPts)
+end
+
 local RING_N = 22
 local RING_COS, RING_SIN = {}, {}
 for i = 1, RING_N do
@@ -1245,18 +1263,13 @@ function drawPockets()
       -- the viewport is not the screen's, so the coverage test fails and
       -- the fill silently vanishes while ordinary line geometry still
       -- draws. A triangle fan is plain geometry and immune to that.
-      local function disc(r, cr, cg, cb)
-        local pts, N = {}, 28
-        for i = 0, N - 1 do
-          local a = i / N * math.pi * 2
-          pts[#pts + 1] = sx + math.cos(a) * r
-          pts[#pts + 1] = sy + math.sin(a) * r
-        end
-        g.setColor(cr, cg, cb)
-        g.polygon("fill", pts)
-      end
-      disc(rad * 1.20, 0.055, 0.10, 0.06)
-      disc(rad, 0.02, 0.02, 0.025)
+      -- Same treatment the contact shadows got: ONE shared closure and point
+      -- buffer for the whole pass with a tabulated circle, rather than a new
+      -- closure per pocket building a fresh 56-element table and recomputing
+      -- sin/cos for a shape that never changes. This was 13 KB/frame, the
+      -- largest single allocation source left in the game.
+      pocketDisc(sx, sy, rad * 1.20, 0.055, 0.10, 0.06)
+      pocketDisc(sx, sy, rad, 0.02, 0.02, 0.025)
       -- a brass lip catching the overhead lamp
       g.setColor(0.42, 0.34, 0.16, 0.85)
       g.setLineWidth(math.max(2, rad * 0.14))
