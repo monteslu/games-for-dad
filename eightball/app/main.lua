@@ -250,17 +250,32 @@ end
 -- Box3D reports orientation as a quaternion because in 3D there is no single
 -- angle to report. 3Dream wants a mat4. This is the standard conversion,
 -- ROW-major to match LOVE's convention (the engine transposes on upload).
-local function quatMat(qx, qy, qz, qw, tx, ty, tz)
+-- One mat4 per caller slot, reused every frame.
+--
+-- This used to build a fresh 16-element table AND a mat4 object per ball per
+-- frame. Sixteen balls plus the tray chips made it the single largest
+-- remaining allocation source in the frame. The matrix is handed to
+-- dream:draw, copied into the render task, and consumed by the draw before
+-- the frame ends -- nothing retains it past present(), so a per-slot buffer
+-- is safe. Each caller passes a distinct slot so two live transforms never
+-- share storage.
+local quatMatPool = {}
+local chipMatPool = {}
+local function quatMat(slot, qx, qy, qz, qw, tx, ty, tz)
   local x2, y2, z2 = qx + qx, qy + qy, qz + qz
   local xx, xy, xz = qx * x2, qx * y2, qx * z2
   local yy, yz, zz = qy * y2, qy * z2, qz * z2
   local wx, wy, wz = qw * x2, qw * y2, qw * z2
-  return dream.mat4({
-    1 - (yy + zz), xy - wz,       xz + wy,       tx,
-    xy + wz,       1 - (xx + zz), yz - wx,       ty,
-    xz - wy,       yz + wx,       1 - (xx + yy), tz,
-    0,             0,             0,             1,
-  })
+  local m = quatMatPool[slot]
+  if not m then
+    m = dream.mat4({ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 })
+    quatMatPool[slot] = m
+  end
+  m[1], m[2],  m[3],  m[4]  = 1 - (yy + zz), xy - wz,       xz + wy,       tx
+  m[5], m[6],  m[7],  m[8]  = xy + wz,       1 - (xx + zz), yz - wx,       ty
+  m[9], m[10], m[11], m[12] = xz - wy,       yz + wx,       1 - (xx + yy), tz
+  m[13], m[14], m[15], m[16] = 0, 0, 0, 1
+  return m
 end
 
 -- How far the cue may be drawn back, in TABLE pixels.
@@ -1100,7 +1115,10 @@ function love.draw()
       -- 3D table. The numbers painted on a ball are the tell: if they never
       -- turn, it is not rolling.
       local qx, qy, qz, qw = b3.body_rotation(b.body)
-      dream:draw(mesh_ball[b.num], quatMat(qx, qy, qz, qw, x / U, y / U, z / U))
+      -- Slot keyed by BALL NUMBER: every ball's transform is still live when
+      -- present() walks the render tasks, so they cannot share one buffer.
+      dream:draw(mesh_ball[b.num],
+                 quatMat(b.num, qx, qy, qz, qw, x / U, y / U, z / U))
     end
   end
   dream:present(cam)
@@ -1168,7 +1186,7 @@ function drawChips()
   dream:addNewLight("point", dream.vec3(0, 2.5, dist * 0.8),
                     dream.vec3(1, 0.98, 0.94), 55)
 
-  for _, c in ipairs(chipQueue) do
+  for ci, c in ipairs(chipQueue) do
     -- HUD pixels -> dream units on the z=0 plane
     local ux = (c.x - W / 2) / pxPerUnit
     local uy = -(c.y - H / 2) / pxPerUnit
@@ -1181,12 +1199,18 @@ function drawChips()
     -- at the ball's pole. Moving the number to the equator (see balls.lua)
     -- made that rotation exactly wrong, and the tray went back to showing
     -- bare colour.
-    dream:draw(mesh_ball[c.num], dream.mat4({
-      scale, 0,     0,     ux,
-      0,     scale, 0,     uy,
-      0,     0,     scale, 0,
-      0,     0,     0,     1,
-    }))
+    -- Pooled per tray slot, same reasoning as the balls: every chip's
+    -- transform is live until this pass presents.
+    local m = chipMatPool[ci]
+    if not m then
+      m = dream.mat4({ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 })
+      chipMatPool[ci] = m
+    end
+    m[1], m[2],  m[3],  m[4]  = scale, 0,     0,     ux
+    m[5], m[6],  m[7],  m[8]  = 0,     scale, 0,     uy
+    m[9], m[10], m[11], m[12] = 0,     0,     scale, 0
+    m[13], m[14], m[15], m[16] = 0, 0, 0, 1
+    dream:draw(mesh_ball[c.num], m)
   end
   dream:present(cam)
 

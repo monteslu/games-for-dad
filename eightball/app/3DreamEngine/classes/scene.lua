@@ -15,10 +15,40 @@ local lib = _3DreamEngine
 ---@private
 function lib:newScene(shadowPass, dynamic, alpha, cam, blacklist, frustumCheck, canvases, light, isSun)
 	---@type DreamScene
-	local m = setmetatable({ }, self.meta.scene)
-	
-	m.tasks = { }
-	
+	-- Scenes are pooled. A frame builds one scene per render pass per present
+	-- and drops it again inside buildScene(), so this allocated a scene table
+	-- plus a fresh task tree several times a frame, every frame, forever.
+	-- scenePoolUsed is reset once per frame in prepare() for the same reason
+	-- the task pool is: several scenes are alive at once within a frame.
+	local pool = self.scenePool
+	local pi = self.scenePoolUsed + 1
+	self.scenePoolUsed = pi
+	local m = pool[pi]
+	if not m then
+		m = setmetatable({ }, self.meta.scene)
+		m.tasks = { }
+		pool[pi] = m
+	end
+
+	-- Clear the task tree WITHOUT discarding it: the shader/material tables
+	-- are the same objects frame after frame, so their sub-lists are reused
+	-- and only their contents are dropped.
+	-- BOTH shapes are cleared, not just the one this scene is about to use: a
+	-- pooled scene can be handed out as an alpha scene (flat array of tasks)
+	-- one frame and a non-alpha scene (shader -> material -> list tree) the
+	-- next, and leftovers of the other shape would be walked as if they
+	-- belonged to this pass.
+	local tasks = m.tasks
+	for k, v in pairs(tasks) do
+		if type(k) == "number" then
+			tasks[k] = nil                      -- flat alpha entry
+		else
+			for _, list in pairs(v) do          -- shader -> material -> list
+				for i = #list, 1, -1 do list[i] = nil end
+			end
+		end
+	end
+
 	m.shadowPass = shadowPass
 	m.dynamic = dynamic
 	m.alpha = alpha

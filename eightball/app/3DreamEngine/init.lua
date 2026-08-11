@@ -271,6 +271,8 @@ function lib:prepare()
 	-- scene would hand the same task object to two of them.
 	self.taskPool = self.taskPool or { }
 	self.taskPoolUsed = 0
+	self.scenePool = self.scenePool or { }
+	self.scenePoolUsed = 0
 	
 	--keep track of reflections
 	self.lastReflections = self.reflections or { }
