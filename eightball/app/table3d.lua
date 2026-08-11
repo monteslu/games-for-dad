@@ -25,7 +25,7 @@ M.PPM = 598
 
 -- A 2:1 table, the real proportion of a pool table (9ft x 4.5ft).
 M.W, M.H = 760, 380           -- HALF extents of the playing surface, px
-M.BALL_R = 19
+M.BALL_R = 23
 M.POCKET_R = 44               -- generous: this is a game for a 85-year-old,
                               -- and a pocket that rejects a good shot is a
                               -- bug as far as the player is concerned

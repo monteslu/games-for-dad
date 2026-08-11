@@ -327,6 +327,25 @@ local function addBall(num, x, z)
   b3.body_set_bullet(b, num == 0)
   b3.shape_enable_hit_events(s, true)
   b3.body_set_sleep_threshold(b, 0.02 * tbl.PPM)   -- ~2 cm/s
+  -- A random resting orientation.
+  --
+  -- A fresh body has identity rotation, which points its pole straight at
+  -- an overhead camera -- so every ball in a new rack sat there showing its
+  -- number face-on like a display case. Real racked balls show whatever
+  -- face they happen to be sitting on. The scoreboard chips are the ONLY
+  -- place a number should face the player, and those are drawn separately
+  -- with no rotation at all.
+  if num ~= 0 then
+    local ax = love.math.random() * 2 - 1
+    local ay = love.math.random() * 2 - 1
+    local az = love.math.random() * 2 - 1
+    local al = math.sqrt(ax * ax + ay * ay + az * az)
+    if al < 0.01 then ax, ay, az, al = 0, 1, 0, 1 end
+    b3.body_set_transform(b, x, tbl.BALL_R + 10, z,
+                          ax / al, ay / al, az / al,
+                          love.math.random() * math.pi * 2)
+  end
+
   local rec = { num = num, body = b, shape = s, pocketed = false, x = x, z = z }
   balls[#balls + 1] = rec
   return rec
@@ -957,8 +976,16 @@ function drawChips()
   -- A camera looking down -Z at the HUD plane. Placing the eye at
   -- (0,0,dist) with this fov makes the visible half-height exactly `half`
   -- dream units, so screen pixels convert by a single scale factor.
+  -- A NARROW field of view with the camera pushed far back, which is
+  -- effectively an orthographic projection.
+  --
+  -- At a wide fov a chip near the screen edge sits ~39 degrees off the view
+  -- axis, and a sphere that far off-axis is foreshortened into an OVAL. The
+  -- table camera does not suffer this because the balls are near its centre;
+  -- the scoreboard spans the full width. Narrowing to 8 degrees puts every
+  -- chip within ~5 degrees of the axis, so they stay round.
   local half = 6.0
-  local fov = 60
+  local fov = 8
   local dist = half / math.tan(math.rad(fov / 2))
   local pxPerUnit = (H / 2) / half
 
@@ -981,11 +1008,18 @@ function drawChips()
     local ux = (c.x - W / 2) / pxPerUnit
     local uy = -(c.y - H / 2) / pxPerUnit
     local scale = (c.rad / pxPerUnit) / (tbl.BALL_R / U)
+    -- Rotated a quarter turn about X so the ball's POLE -- where its number
+    -- lives -- faces THIS camera.
+    --
+    -- The table camera looks down -Y, so an unrotated ball shows its pole
+    -- (and its number) to it. This camera looks down -Z, so the same
+    -- unrotated ball is seen edge-on: bare colour, no number, which is
+    -- exactly how the tray first rendered.
     dream:draw(mesh_ball[c.num], dream.mat4({
-      scale, 0, 0, ux,
-      0, scale, 0, uy,
-      0, 0, scale, 0,
-      0, 0, 0, 1,
+      scale, 0,     0,     ux,
+      0,     0,     scale, uy,
+      0,     -scale, 0,    0,
+      0,     0,     0,     1,
     }))
   end
   dream:present(cam)
