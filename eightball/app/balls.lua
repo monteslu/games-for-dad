@@ -52,18 +52,65 @@ local DIGITS = {
 -- ambient floor is deliberately high: this is a game for someone who has to
 -- tell a 3 from a 6 across a room, and a physically honest shadow side
 -- would make half of every ball unreadable.
+-- Pool balls are polished phenolic resin: a hard, near-dielectric surface
+-- with a high-gloss clearcoat. Three separate terms, because a real one has
+-- three and dropping any of them is what makes a rendered ball look like
+-- plastic:
+--
+--   DIFFUSE     the body colour, Lambertian, with a high ambient floor.
+--               Physically the shadow side would go much darker, but this
+--               is a game for someone reading a 3 from a 6 across a room.
+--   SPECULAR    a TIGHT highlight. Gloss lives in the exponent: a broad
+--               lobe reads as chalk, a tight one as varnish. The reference
+--               implementations land around ^30 after a smoothstep gate,
+--               which is much tighter than the single broad ^46 lobe this
+--               used to have with no gate at all.
+--   FRESNEL/RIM at grazing angles a dielectric reflects far more light, so
+--               the edge of a sphere picks up a bright rim. This is what
+--               separates a ball from the cloth behind it and reads as
+--               roundness rather than a painted circle.
 local function shade(u, v)
   local phi = v * math.pi
   local th  = u * math.pi * 2
   local nx = math.sin(phi) * math.cos(th)
   local ny = math.cos(phi)
   local nz = math.sin(phi) * math.sin(th)
+
   local lx, ly, lz = -0.35, 0.90, 0.26
   local ndl = nx * lx + ny * ly + nz * lz
   if ndl < 0 then ndl = 0 end
   local diff = 0.56 + 0.44 * ndl
-  local spec = ndl ^ 46 * 0.85
-  return diff, spec
+
+  -- BOUNCE LIGHT off the cloth, which is the detail that separates a ball
+  -- resting ON a surface from a ball floating above one. Light reflects up
+  -- from the felt and relights the underside, so the darkest band on a real
+  -- ball is NOT the bottom edge -- it sits slightly above it, with a
+  -- faintly brighter core shadow below. Modelled as a second, weak,
+  -- upward-pointing light tinted with the cloth's own green, since bounced
+  -- light carries the colour of what it bounced off.
+  local ndb = -ny                     -- how much this point faces the cloth
+  if ndb < 0 then ndb = 0 end
+  diff = diff + ndb * ndb * 0.13
+
+  -- tight gloss: gate the lobe, then sharpen it
+  local s = (ndl - 0.5) / 0.5
+  if s < 0 then s = 0 elseif s > 1 then s = 1 end
+  s = s * s * (3 - 2 * s)                 -- smoothstep(0.5, 1.0, ndl)
+  local spec = s ^ 30 * 0.95
+
+  -- Fresnel rim. The camera looks straight down (+y), so the view-facing
+  -- term is simply ny: 1 at the pole under the camera, 0 at the silhouette.
+  -- Schlick's approximation with the edge weighted by how lit that edge is,
+  -- so the rim does not glow on the shadow side.
+  local face = ny
+  if face < 0 then face = -face end
+  local fres = (1 - face) ^ 5
+  -- Kept deliberately gentle. A strong Fresnel term on a light-coloured
+  -- ball stops reading as a glossy edge and starts reading as a halo, and
+  -- the white/yellow balls are where that shows up first.
+  local rim = fres * (0.06 + 0.20 * ndl)
+
+  return diff, spec + rim
 end
 
 function M.makeFaces()

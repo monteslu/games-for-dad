@@ -890,32 +890,28 @@ function love.update(dt)
     if not clickHeld then armDrag = true end
 
     if clickHeld and armDrag then
-      local sx, sy = worldToScreen(cue.x, cue.z)
-      local rx = worldToScreen(cue.x + 100, cue.z)   -- 100px of table...
-      if sx and rx then
-        local pxPerTablePx = math.abs(rx - sx) / 100  -- ...is this many screen px
-        local dx, dy = clickHeld.x - sx, clickHeld.y - sy
-        local d = math.sqrt(dx * dx + dy * dy)
+      -- Measure the drag in WORLD space, not screen space.
+      --
+      -- The shot travels OPPOSITE the drag, like a real cue. That is a
+      -- vector negation, and a negation is only meaningful in a space where
+      -- both axes mean the same kind of thing. Doing it on screen deltas
+      -- meant hand-reasoning about which of screen-x and screen-y agrees
+      -- with the table's axes through the projection -- and negating just
+      -- ONE component does not reverse a vector, it MIRRORS it, so a
+      -- straight-down drag came out as a shot to the left. That sign was
+      -- flipped repeatedly by inference and got it wrong every time.
+      --
+      -- screenToWorld puts the finger on the cloth exactly (round-tripped
+      -- to 0.0000 table px), so the pull vector is cue -> finger in table
+      -- coordinates and the aim is simply its opposite. No conventions to
+      -- get backwards, and it stays correct if the camera ever moves.
+      local fx, fz = screenToWorld(clickHeld.x, clickHeld.y)
+      if fx then
+        local dx, dz = fx - cue.x, fz - cue.z
+        local d = math.sqrt(dx * dx + dz * dz)
         if d > 20 then
-          -- The shot travels OPPOSITE the drag: pull the cue back away from
-          -- where you want the ball to go, exactly like a real cue.
-          --
-          -- screen y grows DOWNWARD while the table's z grows the other way
-          -- through the projection, so the vertical component has to be
-          -- un-flipped before the angle is taken. Negating both components
-          -- of a y-flipped vector rotates the aim about the wrong axis,
-          -- which read as the whole thing being mirrored.
-          -- The shot travels OPPOSITE the drag: pull the cue back away from
-          -- where you want the ball to go, like a real cue.
-          --
-          -- Only the HORIZONTAL component negates. Screen y and the table's
-          -- z run the same way through this projection, but the aim angle is
-          -- consumed as (cos, sin) -> (x, z) where a positive sin renders
-          -- DOWNWARD -- so negating dy as well mirrored the vertical axis
-          -- and the ball went up when you pulled down. Verified by driving
-          -- a known drag and reading the resulting direction back.
-          aimAngle = math.atan(dy, -dx)
-          pull = math.min(PULL_MAX, d / math.max(pxPerTablePx, 0.0001))
+          aimAngle = math.atan(-dz, -dx)
+          pull = math.min(PULL_MAX, d)
           dragging = true
         end
       end
@@ -966,6 +962,70 @@ function love.draw()
   love.graphics.setDepthMode()
   love.graphics.setMeshCullMode("none")
   drawPockets()
+
+  -- CONTACT SHADOWS, between the cloth and the balls.
+  --
+  -- This is the single thing that stops a rendered ball reading as a flat
+  -- disc floating over the felt, and it is the one piece of a sphere's
+  -- light-and-shadow structure that no amount of texture work can supply:
+  -- shading lives ON the ball, but the shadow is evidence about the ball's
+  -- RELATIONSHIP to the surface. Without it there is nothing anchoring a
+  -- ball to the cloth. (See docs/DESIGN.md; the reference is the standard
+  -- art-school sphere study and every billiard renderer worth copying.)
+  --
+  -- Two parts, both from that same structure:
+  --   * a soft CAST shadow, offset away from the lamp. Straight down, a
+  --     sphere's cast shadow is very nearly a circle, so concentric rings
+  --     of darkened felt are enough and cost nothing.
+  --   * an OCCLUSION core right at the contact point, tighter and darker,
+  --     where nothing can reach at all.
+  -- Deliberately NOT drawn under a ball hanging over a pocket -- there is
+  -- no cloth there to receive it.
+  do
+    local g = love.graphics
+    local r0 = worldToScreen(0, 0)
+    local r1 = worldToScreen(tbl.BALL_R, 0)
+    local br = (r0 and r1) and math.abs(r1 - r0) or 14
+    -- lamp is above and slightly toward -x/+z (matches balls.lua shade())
+    local offx, offy = br * 0.30, br * 0.34
+    for _, b in ipairs(balls) do
+      if not b.pocketed then
+        -- Read the body LIVE rather than using the cached b.x/b.z. Those
+        -- are only refreshed by observe(), which runs during the roll and
+        -- FREEZES at the instant a ball is flagged pocketed -- so a stale
+        -- pair could paint a shadow on empty cloth for a ball that is no
+        -- longer being drawn. Whatever is rendered must be what casts.
+        local wx, wy, wz = b3.body_position(b.body)
+        local sx, sy = worldToScreen(wx, wz)
+        -- No cloth over a pocket to receive a shadow, and none once the
+        -- ball has started to drop below the surface.
+        local nearPocket = tbl.overPocket(wx, wz) or wy < -2
+        for _, p in ipairs(tbl.pockets()) do
+          local dx, dz = wx - p.x, wz - p.z
+          if dx * dx + dz * dz < (tbl.POCKET_R * 1.35) ^ 2 then nearPocket = true end
+        end
+        if sx and not nearPocket then
+          -- Opaque rings over the felt colour rather than alpha: a
+          -- translucent fill after the 3D pass is not dependable across
+          -- backends, which is why the pockets are drawn this way too.
+          local function ring(cx, cy, r, cr, cg, cb)
+            local pts, N = {}, 22
+            for i = 0, N - 1 do
+              local a = i / N * math.pi * 2
+              pts[#pts + 1] = cx + math.cos(a) * r
+              pts[#pts + 1] = cy + math.sin(a) * r
+            end
+            g.setColor(cr, cg, cb)
+            g.polygon("fill", pts)
+          end
+          ring(sx + offx, sy + offy, br * 1.16, 0.052, 0.235, 0.098)
+          ring(sx + offx * 0.8, sy + offy * 0.8, br * 0.98, 0.040, 0.196, 0.082)
+          ring(sx + offx * 0.5, sy + offy * 0.5, br * 0.80, 0.030, 0.156, 0.066)
+        end
+      end
+    end
+    g.setColor(1, 1, 1)
+  end
 
   -- PASS 2: the balls, on top of everything.
   dream:prepare()
