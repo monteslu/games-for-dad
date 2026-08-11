@@ -1390,12 +1390,31 @@ function drawHUD()
   -- The message line, in the dark band BELOW the table rather than across
   -- the cloth: a banner over the playing surface hides the very balls the
   -- player is reading. Wins loud, losses quiet (docs/DESIGN.md).
+  -- The result banner and the "press to rack again" prompt are TWO lines
+  -- and have to be stacked as two lines. They used to be positioned
+  -- independently -- banner at H-128 in fontHuge (88px tall, so it runs
+  -- H-128..H-40) and the prompt at H-110, which lands 18px INSIDE the
+  -- banner's own glyphs. Guaranteed collision in the "over" state, every
+  -- time, which is why it survived the earlier HUD pass: every screenshot
+  -- I checked was mid-game, where there is no prompt to collide with.
+  --
+  -- Both are now derived from one baseline and the banner's ACTUAL height,
+  -- so they cannot drift back into each other.
+  local msgSize = (state.phase == "over") and theme.fontHuge or theme.fontBig
+  local promptH = theme.fontMid
+  local bannerY
+  if state.phase == "over" then
+    -- reserve room for the prompt underneath, and keep the pair centred
+    -- in the band below the table
+    bannerY = H - 60 - promptH - msgSize
+  else
+    bannerY = H - 128
+  end
   if state.message and state.message ~= "" then
     local col = theme.white
     if state.messageMood == "win" then col = theme.win
     elseif state.messageMood == "loss" then col = theme.lossRed end
-    ui.banner(state.message, H - 128, col,
-              state.phase == "over" and theme.fontHuge or theme.fontBig)
+    ui.banner(state.message, bannerY, col, msgSize)
   end
 
   -- No power meter and no shoot button: the cue stick already shows the
@@ -1422,8 +1441,9 @@ function drawHUD()
   end
 
   if state.phase == "over" then
-    g.setFont(ui.font(theme.fontMid))
+    -- directly under the banner, from the same baseline it was placed at
+    g.setFont(ui.font(promptH))
     g.setColor(theme.quiet)
-    g.printf("press to rack again", 0, H - 110, W, "center")
+    g.printf("press to rack again", 0, bannerY + msgSize + 14, W, "center")
   end
 end
