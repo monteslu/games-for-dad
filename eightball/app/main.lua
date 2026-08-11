@@ -117,6 +117,7 @@ local shot = nil          -- what happened during the current roll
 local rollFrames = 0
 local cpuThink = 0
 local placeX, placeZ = 0, 0
+local placeOK = true    -- is the current ball-in-hand spot legal?
 local chipQueue = {}
 
 -- Cue-ball speed at full power, in METRES PER SECOND. A real break is
@@ -659,6 +660,18 @@ local function observe()
   end
 end
 
+-- Hold a scratched cue ball out of play: far under the table, asleep, and
+-- still flagged pocketed so nothing draws it and no shadow is cast for it.
+-- The body has to go SOMEWHERE (destroying and recreating it would lose
+-- every tuned material property), so it goes where nothing can reach.
+local function parkCue()
+  cue.pocketed = true
+  b3.body_set_transform(cue.body, 0, -4000, 0, 0, 1, 0, 0)
+  b3.body_set_velocity(cue.body, 0, 0, 0)
+  b3.body_set_angular_velocity(cue.body, 0, 0, 0)
+  b3.body_set_awake(cue.body, false)
+end
+
 local function placeCueAt(x, z)
   cue.pocketed = false
   cue.x, cue.z = x, z
@@ -782,9 +795,15 @@ function love.update(dt)
     -- settle: everything asleep, or a hard cap so a stuck ball cannot hang
     -- the game forever
     if (rollFrames > 30 and not anyMoving()) or rollFrames > 1200 then
-      if cue.pocketed then placeCueAt(-tbl.W * 0.5, 0); cue.pocketed = true end
+      -- Park the scratched cue ball OFF the table rather than dropping it
+      -- back on the head spot. It used to be re-placed here so the physics
+      -- body was not left sitting in a pocket -- but that also cleared
+      -- `pocketed`, so the ball reappeared on the cloth while the game was
+      -- still asking the player to place it. Two cue balls on screen: the
+      -- real one at the head spot and the crosshair they were aiming.
+      -- It stays hidden until placement is confirmed.
+      if cue.pocketed then parkCue() end
       local verdict = rules.judge(state, state.turn, shot)
-      if cue.pocketed then placeCueAt(-tbl.W * 0.5, 0) end
       endTurn(verdict)
     end
     return
@@ -821,7 +840,20 @@ function love.update(dt)
     end
     placeX = math.max(-tbl.W + tbl.BALL_R, math.min(tbl.W - tbl.BALL_R, placeX))
     placeZ = math.max(-tbl.H + tbl.BALL_R, math.min(tbl.H - tbl.BALL_R, placeZ))
-    if confirmPressed() or inRect(click, PLACE_BTN) then
+    -- The cue ball cannot occupy the same space as another ball, or sit
+    -- over a pocket. This is not a rules technicality like the head string
+    -- -- it is physically impossible, and dropping a ball inside another
+    -- one makes the solver shove them apart at speed the moment play
+    -- resumes. The spot is shown red and PLACE refuses.
+    placeOK = true
+    for _, b in ipairs(balls) do
+      if b ~= cue and not b.pocketed then
+        local dx, dz = placeX - b.x, placeZ - b.z
+        if dx * dx + dz * dz < (tbl.BALL_R * 2) ^ 2 then placeOK = false end
+      end
+    end
+    if tbl.overPocket(placeX, placeZ) then placeOK = false end
+    if placeOK and (confirmPressed() or inRect(click, PLACE_BTN)) then
       placeCueAt(placeX, placeZ)
       state.ballInHand = false
       state.phase = "aim"
@@ -1449,7 +1481,10 @@ function drawHUD()
   if state.phase == "placing" then
     local sx, sy = worldToScreen(placeX, placeZ)
     if sx then
-      g.setColor(theme.gold)
+      -- gold when the spot is legal, red when it overlaps a ball or a
+      -- pocket, so the refusal is visible BEFORE the player presses PLACE
+      -- rather than as a press that silently does nothing
+      if placeOK then g.setColor(theme.gold) else g.setColor(theme.lossRed) end
       g.setLineWidth(4)
       g.circle("line", sx, sy, 26)
       g.line(sx - 40, sy, sx + 40, sy)
