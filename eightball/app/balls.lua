@@ -29,8 +29,9 @@ for n = 9, 15 do M.COLORS[n] = M.COLORS[n - 8] end
 
 function M.isStripe(n) return n >= 9 and n <= 15 end
 
--- A 3x5 bitmap font. Rasterising a TTF needs a canvas, and at ball size a
--- crisp block numeral out-reads a scaled glyph anyway.
+-- A 3x5 bitmap font, stored the right way round. Rasterising a TTF needs a
+-- canvas, and at ball size a crisp block numeral out-reads a scaled glyph.
+
 local DIGITS = {
   ["0"] = { "111", "101", "101", "101", "111" },
   ["1"] = { "010", "110", "010", "010", "111" },
@@ -110,71 +111,76 @@ function M.makeFaces()
     -- a horizontal BAND across the top of the texture, and it lands on the
     -- ball as a clean circle facing the camera. A second band at the bottom
     -- puts a number on the other pole, so a rolled ball still shows one.
+    -- ── the number circles ────────────────────────────────────────────
+    --
+    -- At the EQUATOR, in a plain UV rect. This is how real pool-ball models
+    -- are built and the reason is a hard property of the projection, not a
+    -- preference: an equirectangular unwrap has singularities at the poles
+    -- where the entire u range collapses to a point, so a glyph placed
+    -- there is drawn once per revolution and pinches into a smear. Detail
+    -- belongs at the equator, where distortion is minimal.
+    --
+    -- (This file previously painted the numbers AT the pole, to face a
+    -- straight-down camera. That is unfixable by any amount of sign
+    -- flipping -- the glyph repeats because u wraps. The camera tilts
+    -- instead; see CAM_TILT in main.lua.)
+    --
+    -- TWO circles, half a turn apart, exactly like a real ball.
+    --
+    -- A ring of six was tried and looked like a die: three visible at once
+    -- on the same ball, and the 8 staring back with two circles side by
+    -- side. A real pool ball has two, and the answer to "can the player see
+    -- one" is the camera angle, not more numbers.
     if n > 0 then
-      local capV = 0.22                     -- angular size of the number cap
-      local function stampCap(vTop)
-        -- rows within the cap, measured from whichever pole
-        local y0 = vTop and 0 or math.floor(S * (1 - capV))
-        local y1 = vTop and math.ceil(S * capV) or S - 1
-        for y = y0, y1 do
-          local v = (y + 0.5) / S
-          local t = vTop and (v / capV) or ((1 - v) / capV)   -- 0 at pole, 1 at edge
-          if t <= 1 then
-            for x = 0, S - 1 do
-              local diff, spec = shade((x + 0.5) / S, v)
-              d:setPixel(x, y,
-                math.min(1, 0.97 * diff + spec),
-                math.min(1, 0.96 * diff + spec),
-                math.min(1, 0.93 * diff + spec), 1)
+      local rad = S * 0.125                 -- circle radius, in texels
+      local radU = rad / 2                  -- u carries 2x the arc of v
+      for _, cu in ipairs({ 0.25, 0.75 }) do
+        local cx, cy = cu * S, S * 0.5
+        for y = math.floor(cy - rad), math.ceil(cy + rad) do
+          for x = math.floor(cx - radU), math.ceil(cx + radU) do
+            if x >= 0 and x < S and y >= 0 and y < S then
+              local dx, dy = (x - cx) / radU, (y - cy) / rad
+              if dx * dx + dy * dy <= 1 then
+                local diff, spec = shade((x + 0.5) / S, (y + 0.5) / S)
+                d:setPixel(x, y,
+                  math.min(1, 0.97 * diff + spec),
+                  math.min(1, 0.96 * diff + spec),
+                  math.min(1, 0.93 * diff + spec), 1)
+              end
             end
           end
         end
 
-        -- The numeral, by INVERSE mapping: walk every texel in the cap,
-        -- work out where it lands on the flat disc the player sees, and ask
-        -- the glyph whether that spot is ink. Stamping forward instead (for
-        -- each glyph pixel, find its texel) leaves gaps and overlaps,
-        -- because the u spacing changes with every row -- it came out as
-        -- scribble.
+        -- the numeral, squashed in u to match the circle
         local str = tostring(n)
         local gw, gh = 3, 5
-        local cols = #str * gw + (#str - 1)          -- cells across, 1 gap
-        local scale = 0.62                            -- glyph size within cap
-        for y = y0, y1 do
-          local v = (y + 0.5) / S
-          local rr = vTop and (v / capV) or ((1 - v) / capV)
-          if rr <= 1 then
-            for x = 0, S - 1 do
-              local u = (x + 0.5) / S
-              local aa = u * math.pi * 2
-              -- position on the flat disc, -1..1
-              -- a quarter turn from the naive mapping: without it the
-              -- numerals come out lying on their side
-              local fx = -rr * math.cos(aa)
-              local fy = -rr * math.sin(aa)
-              if not vTop then fy = -fy end
-              -- into glyph cells
-              local gxr = fx / scale * (cols / 2) + cols / 2
-              local gyr = fy / scale * (gh / 2) + gh / 2
-              local gx = math.floor(gxr) + 1
-              local gy = math.floor(gyr) + 1
-              if gy >= 1 and gy <= gh and gx >= 1 and gx <= cols then
-                -- which digit, and which cell within it
-                local di = math.floor((gx - 1) / (gw + 1)) + 1
-                local cx2 = (gx - 1) % (gw + 1) + 1
-                local ch2 = str:sub(di, di)
-                local glyph = DIGITS[ch2]
-                if glyph and cx2 <= gw and glyph[gy]:sub(cx2, cx2) == "1" then
-                  local dd = shade(u, v)
-                  d:setPixel(x, y, 0.09 * dd, 0.09 * dd, 0.10 * dd, 1)
+        local py = math.max(3, math.floor(rad * 1.15 / gh))
+        local px = math.max(2, math.floor(py * 0.5))
+        local totalW = (#str * (gw + 1) - 1) * px
+        local ox = cx - totalW / 2
+        local oy = cy - (gh * py) / 2
+        for i = 1, #str do
+          local glyph = DIGITS[str:sub(i, i)]
+          if glyph then
+            for gy = 1, gh do
+              for gx = 1, gw do
+                if glyph[gy]:sub(gx, gx) == "1" then
+                  for yy = 0, py - 1 do
+                    for xx = 0, px - 1 do
+                      local tx = math.floor(ox + ((i - 1) * (gw + 1) + gx - 1) * px + xx)
+                      local ty = math.floor(oy + (gy - 1) * py + yy)
+                      if tx >= 0 and tx < S and ty >= 0 and ty < S then
+                        local dd = shade((tx + 0.5) / S, (ty + 0.5) / S)
+                        d:setPixel(tx, ty, 0.09 * dd, 0.09 * dd, 0.10 * dd, 1)
+                      end
+                    end
+                  end
                 end
               end
             end
           end
         end
       end
-      stampCap(true)
-      stampCap(false)
     end
 
     faces[n] = love.graphics.newImage(d)
