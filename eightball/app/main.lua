@@ -179,6 +179,24 @@ local function worldToScreen(wx, wz)
   return (cx / cw * 0.5 + 0.5) * W, (1 - (cy / cw * 0.5 + 0.5)) * H
 end
 
+-- A model matrix from a quaternion plus a translation.
+--
+-- Box3D reports orientation as a quaternion because in 3D there is no single
+-- angle to report. 3Dream wants a mat4. This is the standard conversion,
+-- ROW-major to match LOVE's convention (the engine transposes on upload).
+local function quatMat(qx, qy, qz, qw, tx, ty, tz)
+  local x2, y2, z2 = qx + qx, qy + qy, qz + qz
+  local xx, xy, xz = qx * x2, qx * y2, qx * z2
+  local yy, yz, zz = qy * y2, qy * z2, qz * z2
+  local wx, wy, wz = qw * x2, qw * y2, qw * z2
+  return dream.mat4({
+    1 - (yy + zz), xy - wz,       xz + wy,       tx,
+    xy + wz,       1 - (xx + zz), yz - wx,       ty,
+    xz - wy,       yz + wx,       1 - (xx + yy), tz,
+    0,             0,             0,             1,
+  })
+end
+
 -- ── geometry builders ─────────────────────────────────────────────────
 -- Built through 3Dream's own buffers (getOrCreateBuffer + append), the path
 -- its .obj loader uses. Assigning plain Lua tables to mesh.vertices looks
@@ -245,8 +263,16 @@ local function addBall(num, x, z)
   local s = b3.shape_sphere(b, tbl.BALL_R, 1.7)
   local M = tbl.MAT.ball
   b3.shape_set_material(s, M.friction, M.restitution, M.rolling)
-  b3.body_set_linear_damping(b, 0.52)
-  b3.body_set_angular_damping(b, 0.9)
+  -- Damping is what STOPS a ball, and it has to be split the right way or
+  -- the balls slide like hockey pucks instead of rolling like billiards.
+  --
+  -- Linear damping bleeds travel; ANGULAR damping bleeds spin. Setting
+  -- angular high (it was 0.9) meant every ball was braked out of rotating
+  -- the instant the cloth's friction tried to spin it up, so the physics
+  -- was genuinely 3D and the balls genuinely never rolled. Spin now decays
+  -- only through rolling resistance, which is the real mechanism.
+  b3.body_set_linear_damping(b, 0.28)
+  b3.body_set_angular_damping(b, 0.06)
   b3.body_set_bullet(b, true)            -- a hard shot can cross a cushion
   b3.shape_enable_hit_events(s, true)
   b3.body_set_sleep_threshold(b, 7)
@@ -395,8 +421,17 @@ end
 local function fire(angle, pow)
   local imp = SHOT_IMPULSE * (0.22 + pow * 0.78)
   b3.body_set_awake(cue.body, true)
-  b3.body_apply_impulse(cue.body,
-    math.cos(angle) * imp * 1000, 0, math.sin(angle) * imp * 1000)
+  local ix = math.cos(angle) * imp * 1000
+  local iz = math.sin(angle) * imp * 1000
+  -- Strike slightly ABOVE centre, as a real cue does.
+  --
+  -- An impulse through the centre of mass produces no torque at all, so the
+  -- cue ball would leave the tip sliding rather than rolling and only pick
+  -- up spin from cloth friction. Hitting above centre imparts forward roll
+  -- immediately, which is both what happens on a real table and what makes
+  -- the ball visibly turn as it travels.
+  local cx, cy, cz = b3.body_position(cue.body)
+  b3.body_apply_impulse_at(cue.body, ix, 0, iz, cx, cy + tbl.BALL_R * 0.45, cz)
   shot = { firstHit = nil, pocketed = {}, cueScratched = false,
            railAfter = false, isBreak = state.isBreak, offTable = {} }
   state.phase = "roll"
@@ -715,7 +750,15 @@ function love.draw()
   for _, b in ipairs(balls) do
     if not b.pocketed then
       local x, y, z = b3.body_position(b.body)
-      dream:draw(mesh_ball[b.num], x / U, y / U, z / U)
+      -- Draw with the body's ORIENTATION, not just its position.
+      --
+      -- dream:draw(mesh, x, y, z) builds a translation-only matrix, which
+      -- throws away the rotation Box3D computed -- so the balls slid across
+      -- the cloth like sprites and the whole thing read as 2D physics on a
+      -- 3D table. The numbers painted on a ball are the tell: if they never
+      -- turn, it is not rolling.
+      local qx, qy, qz, qw = b3.body_rotation(b.body)
+      dream:draw(mesh_ball[b.num], quatMat(qx, qy, qz, qw, x / U, y / U, z / U))
     end
   end
   dream:present(cam)

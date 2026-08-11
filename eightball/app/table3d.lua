@@ -34,7 +34,12 @@ end
 M.MAT = {
   cloth   = { friction = 0.22, restitution = 0.0,  rolling = 0.0 },
   cushion = { friction = 0.14, restitution = 0.82, rolling = 0.0 },
-  ball    = { friction = 0.06, restitution = 0.94, rolling = 0.012 },
+  -- friction here is the BALL-CLOTH sliding coefficient (measured 0.15-0.4,
+  -- typical 0.2), NOT the ball-ball value. This is the number that converts
+  -- a struck ball's sliding into ROLLING; at 0.06 the balls skated across
+  -- the cloth without ever spinning up, which is what made 3D physics look
+  -- like 2D physics.
+  ball    = { friction = 0.22, restitution = 0.94, rolling = 0.010 },
 }
 
 function M.build(world)
