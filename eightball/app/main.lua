@@ -82,6 +82,7 @@ local aimAngle = 0
 -- distracted player loses nothing.
 local pull = 0
 local dragging = false
+local armDrag = true   -- has the screen been released since this phase began?
 -- Max pull reaches from the TOP RAIL to the TOP OF THE SCREEN -- the empty
 -- band above the table, which is the room the gesture actually has. Derived
 -- from the live projection rather than hardcoded, so it stays correct if the
@@ -220,23 +221,22 @@ end
 -- Derived from the live projection so it stays correct if the camera
 -- framing changes, with a fallback for the first frame before one exists.
 local function pullMax()
-  local W, H = love.graphics.getWidth(), love.graphics.getHeight()
+  -- A CONSTANT distance: the gap from the top of the green to the top of
+  -- the screen. It does not depend on where the cue ball is, so the same
+  -- gesture means the same power everywhere on the table -- and because it
+  -- is the SMALLEST margin around the cloth, a full pull is reachable in
+  -- every direction rather than running out of screen sideways.
+  --
+  -- The old version added a half-table term, which made the cap grow when
+  -- the ball sat in the middle. That is exactly the inconsistency this is
+  -- supposed to remove.
   local _, topY = worldToScreen(0, -tbl.H)
   local _, midY = worldToScreen(0, 0)
-  local leftX   = worldToScreen(-tbl.W, 0)
-  local midX    = worldToScreen(0, 0)
-  if not (topY and midY and leftX and midX) then return tbl.H end
-
+  if not (topY and midY) then return tbl.H end
   local pxPerTablePy = math.abs(midY - topY) / tbl.H
-  local pxPerTablePx = math.abs(midX - leftX) / tbl.W
-  if pxPerTablePy < 0.0001 or pxPerTablePx < 0.0001 then return tbl.H end
-
-  -- screen gap from each rail to the edge of the display, in table units
-  local gapTop  = topY / pxPerTablePy
-  local gapSide = leftX / pxPerTablePx
-  local margin = math.min(gapTop, gapSide)
-  -- plus the half-table the cue can always travel across
-  return math.max(120, margin + math.min(tbl.W, tbl.H))
+  if pxPerTablePy < 0.0001 then return tbl.H end
+  -- topY is the screen y of the top rail; the gap above it is topY itself.
+  return math.max(120, topY / pxPerTablePy)
 end
 
 -- ── geometry builders ─────────────────────────────────────────────────
@@ -680,7 +680,13 @@ function love.update(dt)
   b3.world_step(world, 1 / 60, 4)
 
   if state.phase == "over" then
-    if confirmPressed() or click then rack() end
+    -- same leftover-touch guard as PLACE: the tap that dismisses the result
+    -- must not also be read as the start of a shot on the new rack
+    if confirmPressed() or click then
+      rack()
+      dragging = false
+      armDrag = false
+    end
     return
   end
 
@@ -703,6 +709,12 @@ function love.update(dt)
       state.ballInHand = false
       state.phase = "aim"
       state.message = ""
+      -- The finger that tapped PLACE is still DOWN. Without this the aim
+      -- phase sees it as a drag already in progress and lifting off fires a
+      -- shot the player never aimed -- placing the ball launched it.
+      -- Require the touch to be released and started again.
+      dragging = false
+      armDrag = false
     end
     return
   end
@@ -737,10 +749,16 @@ function love.update(dt)
     -- the cap depends on the projection, so it is refreshed live
     PULL_MAX = pullMax()
     local step = 0.014
-    if heldLeft()  then aimAngle = aimAngle - step end
-    if heldRight() then aimAngle = aimAngle + step end
-    if edges.left  then aimAngle = aimAngle - step end
-    if edges.right then aimAngle = aimAngle + step end
+    -- RIGHT sweeps the cue CLOCKWISE on screen, LEFT counter-clockwise.
+    --
+    -- Measured, not derived: holding RIGHT with the old signs walked the cue
+    -- tip DOWN the left-hand side, which is counter-clockwise. The aim angle
+    -- is consumed as (cos, sin) -> (x, z) and the projection flips the
+    -- vertical, so the on-screen sense is the opposite of the maths sense.
+    if heldLeft()  then aimAngle = aimAngle + step end
+    if heldRight() then aimAngle = aimAngle - step end
+    if edges.left  then aimAngle = aimAngle + step end
+    if edges.right then aimAngle = aimAngle - step end
 
     -- UP/DOWN draw the cue back and push it in. Held, not tapped, so a
     -- shaky thumb cannot overshoot in one press.
@@ -760,7 +778,12 @@ function love.update(dt)
     -- Screen distance is converted to table distance through the projection
     -- so the pull means the same thing it does on the pad: one shared power
     -- scale, not two that drift apart.
-    if clickHeld then
+    -- A drag only counts once the screen has been released since entering
+    -- this phase; otherwise a finger left over from the PLACE tap (or from
+    -- dismissing a result) reads as an aim already under way.
+    if not clickHeld then armDrag = true end
+
+    if clickHeld and armDrag then
       local sx, sy = worldToScreen(cue.x, cue.z)
       local rx = worldToScreen(cue.x + 100, cue.z)   -- 100px of table...
       if sx and rx then
@@ -825,8 +848,22 @@ function love.draw()
   -- the first draw and every surface renders unlit.
   dream:addNewLight("point", dream.vec3(0, 8, 0), dream.vec3(1, 0.97, 0.92), 70)
 
+  -- PASS 1: the table itself.
   dream:draw(mesh_cloth, 0, 0, 0)
   for _, r in ipairs(mesh_rails) do dream:draw(r.mesh, r.x, r.y, r.z) end
+  dream:present(cam)
+  projCam = cam.transformProj
+
+  -- The pockets go on the cloth BEFORE the balls, so a ball crossing a
+  -- pocket mouth passes OVER it. Drawn after the balls they painted on top,
+  -- which read as the ball sinking under the hole while still in play.
+  love.graphics.setDepthMode()
+  love.graphics.setMeshCullMode("none")
+  drawPockets()
+
+  -- PASS 2: the balls, on top of everything.
+  dream:prepare()
+  dream:addNewLight("point", dream.vec3(0, 8, 0), dream.vec3(1, 0.97, 0.92), 70)
   for _, b in ipairs(balls) do
     if not b.pocketed then
       local x, y, z = b3.body_position(b.body)
@@ -850,7 +887,6 @@ function love.draw()
   love.graphics.setDepthMode()
   love.graphics.setMeshCullMode("none")
 
-  drawPockets()
   drawHUD()
 end
 
@@ -915,13 +951,39 @@ function drawHUD()
   if state.phase == "aim" and state.turn == PLAYER and (padUsed or dragging) then
     local sx, sy = worldToScreen(cue.x, cue.z)
     -- where the shot is headed
-    local ex, ey = worldToScreen(cue.x + math.cos(aimAngle) * 700,
-                                 cue.z + math.sin(aimAngle) * 700)
+    -- Stop the aim line at the first rail (or the first ball) it meets.
+    -- Running it a fixed 700px shot it off the cloth and across the
+    -- scoreboard, and a guide that leaves the table is telling the player
+    -- about a shot that cannot happen.
+    local dx, dz = math.cos(aimAngle), math.sin(aimAngle)
+    local reach = 2200
+    for _, ob in ipairs(balls) do
+      if not ob.pocketed and ob ~= cue then
+        -- distance along the ray to the closest approach
+        local rx, rz = ob.x - cue.x, ob.z - cue.z
+        local t = rx * dx + rz * dz
+        if t > 0 then
+          local px, pz = cue.x + dx * t, cue.z + dz * t
+          local miss = math.sqrt((ob.x - px) ^ 2 + (ob.z - pz) ^ 2)
+          if miss < tbl.BALL_R * 2 then
+            -- back off to where the surfaces actually touch
+            local back = math.sqrt(math.max(0, (tbl.BALL_R * 2) ^ 2 - miss * miss))
+            reach = math.min(reach, math.max(0, t - back))
+          end
+        end
+      end
+    end
+    -- and clamp to the cushions
+    if dx > 0.0001 then reach = math.min(reach, (tbl.W - tbl.BALL_R - cue.x) / dx)
+    elseif dx < -0.0001 then reach = math.min(reach, (-tbl.W + tbl.BALL_R - cue.x) / dx) end
+    if dz > 0.0001 then reach = math.min(reach, (tbl.H - tbl.BALL_R - cue.z) / dz)
+    elseif dz < -0.0001 then reach = math.min(reach, (-tbl.H + tbl.BALL_R - cue.z) / dz) end
+    reach = math.max(0, reach)
+    local ex, ey = worldToScreen(cue.x + dx * reach, cue.z + dz * reach)
     if sx and ex then
       g.setColor(1, 1, 1, 0.32)
-      g.setLineWidth(3)
+      g.setLineWidth(2)
       g.line(sx, sy, ex, ey)
-      g.circle("line", ex, ey, 15)
     end
 
     -- the cue itself, drawn back opposite the aim. Its LENGTH is the power
@@ -938,10 +1000,32 @@ function drawHUD()
         local r = STICK_NEAR[1] + (STICK_FAR[1] - STICK_NEAR[1]) * pct
         local gg = STICK_NEAR[2] + (STICK_FAR[2] - STICK_NEAR[2]) * pct
         local bb = STICK_NEAR[3] + (STICK_FAR[3] - STICK_NEAR[3]) * pct
-        g.setColor(r, gg, bb)
-        g.setLineWidth(13)
-        g.line(bx, by, tx, ty)
-        g.setLineWidth(1)
+
+        -- Drawn as a tapered POLYGON, not a wide line: line width is capped
+        -- by the GL path, so setLineWidth(24) still came out hairline. A
+        -- quad also lets the cue taper from butt to tip like a real one.
+        local ux, uy = tx - bx, ty - by
+        local ul = math.sqrt(ux * ux + uy * uy)
+        if ul > 0.001 then
+          ux, uy = ux / ul, uy / ul
+          local px, py = -uy, ux            -- perpendicular
+          local wButt, wTip = 11, 5
+          g.setColor(r, gg, bb)
+          g.polygon("fill",
+            bx + px * wButt, by + py * wButt,
+            bx - px * wButt, by - py * wButt,
+            tx - px * wTip,  ty - py * wTip,
+            tx + px * wTip,  ty + py * wTip)
+          -- a darker edge so the cue reads against pale felt and pale balls
+          g.setColor(r * 0.45, gg * 0.45, bb * 0.45)
+          g.setLineWidth(2)
+          g.polygon("line",
+            bx + px * wButt, by + py * wButt,
+            bx - px * wButt, by - py * wButt,
+            tx - px * wTip,  ty - py * wTip,
+            tx + px * wTip,  ty + py * wTip)
+          g.setLineWidth(1)
+        end
       end
     end
     g.setLineWidth(1)

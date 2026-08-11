@@ -18,9 +18,16 @@
 --   THE BREAK CANNOT LOSE. Pocketing the 8 on the break is a re-rack, never
 --   a loss.
 --
--- Everything else is the real game: groups assigned on the first legal
--- pocketing, the table open until then, cushion-contact requirement,
--- wrong-ball-first fouls, and losing by fouling the 8 in.
+--   SLOP COUNTS AND ALMOST NOTHING IS A FOUL. The only foul is a scratch,
+--   because that is the only one a player can see and understand: the white
+--   went in the hole. Hitting the wrong group first, failing to reach a
+--   rail, missing everything -- the rule book hands the table over for all
+--   of them, and each is a punishment for something invisible. Losing your
+--   turn is enough. Pot a ball you never aimed at and it is yours.
+--
+-- What IS still real: groups are assigned on the first ball pocketed, the
+-- table is open until then, you must clear your group before the 8, and
+-- putting the 8 down early (or scratching on it) loses the game.
 
 local M = {}
 
@@ -125,11 +132,9 @@ function M.judge(state, seat, shot)
       r.reason = "SCRATCH ON THE 8"
       return r
     end
-    if shot.firstHit ~= 8 then
-      r.lose = true
-      r.reason = "THE 8 WAS NOT STRUCK FIRST"
-      return r
-    end
+    -- Sinking the 8 when it was your last ball WINS, however it got there.
+    -- The rule book wants the 8 struck first and the pocket called; both
+    -- would turn a won game into a loss for a reason the player cannot see.
     r.win = true
     r.reason = "8 BALL - GAME"
     return r
@@ -143,24 +148,21 @@ function M.judge(state, seat, shot)
     end
   end
 
-  -- ── ordinary fouls ───────────────────────────────────────────────
-  -- The break is judged loosely on purpose: a weak break is a bad shot,
-  -- not a penalty, and an 85-year-old should not lose the table for it.
+  -- ── fouls: ONE of them ───────────────────────────────────────────
+  --
+  -- Only a SCRATCH costs anything. The rule book also fouls you for hitting
+  -- the wrong group first, for failing to drive a ball to a rail, and for
+  -- not striking anything at all -- and every one of those hands the table
+  -- over for a reason this player did not see coming, which docs/DESIGN.md
+  -- rules out. Losing your turn is punishment enough for a bad shot.
+  --
+  -- SLOP COUNTS. Pot a ball you never meant to and it is yours. Aiming at
+  -- one ball and sinking another is the most satisfying thing that happens
+  -- to a casual player, and calling it a foul is how you make someone stop
+  -- playing.
   if shot.cueScratched then
     r.foul = true
     r.reason = "SCRATCH"
-  elseif shot.firstHit == nil then
-    r.foul = true
-    r.reason = "NO BALL WAS STRUCK"
-  elseif not shot.isBreak and not M.legalFirstContact(state, seat, shot.firstHit) then
-    r.foul = true
-    local t = M.targetGroup(state, seat)
-    r.reason = (t == "eight") and "MUST HIT THE 8 FIRST"
-               or ("MUST HIT " .. string.upper(t or "A BALL") .. " FIRST")
-  elseif not shot.isBreak and #shot.pocketed == 0 and not shot.railAfter then
-    -- no ball pocketed AND nothing reached a cushion
-    r.foul = true
-    r.reason = "NO RAIL AFTER CONTACT"
   end
 
   -- ── group assignment: the first legally pocketed ball claims it ───
