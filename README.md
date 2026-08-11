@@ -16,6 +16,7 @@ wasmcart player runs.
 | Five Card Stud | `fivecardstud/` | Heads-up stud against the dealer. One hole card, bet street by street. |
 | Seven Card Stud | `sevencardstud/` | The full game: two down, four up, one more down, best five of seven. |
 | Spades | `spades/` | Partnership Spades: you and a CPU partner against two CPUs. Books, bags, nil, first team to 500. |
+| Eight Ball | `eightball/` | 3D top-down 8-ball against the house. Aim, draw the cue back, let it go. |
 
 ## Playing
 
@@ -32,6 +33,13 @@ the `icon.png` beside the cart for the launcher icon and the cart's
 manifest for the app's name and version. Those builds run the engine as
 native code rather than wasm: about 6 MB per game instead of 64, at a
 locked 60 fps.
+
+**Eight Ball is the odd one out on controls**, because a cue is not a card:
+LEFT/RIGHT swing the aim, UP/DOWN draw the cue back, and the confirm button
+strikes. How far the cue is drawn back IS the power, and the stick fades
+cream to red as it grows, so there is no meter to read and nothing timed.
+On a phone the same shot is one gesture: drag away from the cue ball to aim
+and load it, lift your finger to shoot.
 
 Controls, in every game:
 
