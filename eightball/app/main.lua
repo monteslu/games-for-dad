@@ -97,6 +97,7 @@ local shot = nil          -- what happened during the current roll
 local rollFrames = 0
 local cpuThink = 0
 local placeX, placeZ = 0, 0
+local chipQueue = {}
 
 -- Cue-ball speed at full power, in METRES PER SECOND. A real break is
 -- 7-11 m/s; a soft positional roll is about 1.
@@ -439,11 +440,58 @@ function love.load()
     mesh_rails[#mesh_rails + 1] = { mesh = m, x = x, y = y, z = z }
   end
   local halfW, halfH = tbl.W / U, tbl.H / U
-  -- long rails run the full width INCLUDING the corners, so the frame closes
-  rail(halfW + RW * 2, RH, RW, 0, RH * 0.5, -(halfH + RW))
-  rail(halfW + RW * 2, RH, RW, 0, RH * 0.5,  (halfH + RW))
-  rail(RW, RH, halfH, -(halfW + RW), RH * 0.5, 0)
-  rail(RW, RH, halfH,  (halfW + RW), RH * 0.5, 0)
+  -- The long rails stop short of the corners, which are filled by a
+  -- quarter-round instead of a square butt joint. A real table has a rounded
+  -- outer corner and a hard 90-degree box reads as a placeholder.
+  local CR = RW * 1.05                      -- corner radius
+  rail(halfW + RW * 2 - CR, RH, RW, 0, RH * 0.5, -(halfH + RW))
+  rail(halfW + RW * 2 - CR, RH, RW, 0, RH * 0.5,  (halfH + RW))
+  rail(RW, RH, halfH - CR + RW, -(halfW + RW), RH * 0.5, 0)
+  rail(RW, RH, halfH - CR + RW,  (halfW + RW), RH * 0.5, 0)
+
+  -- the four rounded corners, each an arc of wedges
+  local function corner(cx, cz, a0)
+    local m = dream:newMesh(mat_rail)
+    local mv = m:getOrCreateBuffer("vertices")
+    local mn = m:getOrCreateBuffer("normals")
+    local mt = m:getOrCreateBuffer("texCoords")
+    local mf = m:getOrCreateBuffer("faces")
+    -- rIn is 0 so the wedge is a solid pie slice. A non-zero inner radius
+    -- left a bite taken out of the wood at every corner.
+    local SEG, rIn, rOut = 9, 0, CR
+    local yTop, yBot = RH, 0
+    for i = 0, SEG do
+      local a = a0 + (i / SEG) * (math.pi / 2)
+      local ca, sa = math.cos(a), math.sin(a)
+      local base = mv:getSize()
+      -- inner-top, outer-top, outer-bottom, inner-bottom
+      mv:append({ cx + ca * rIn,  yTop, cz + sa * rIn })
+      mv:append({ cx + ca * rOut, yTop, cz + sa * rOut })
+      mv:append({ cx + ca * rOut, yBot, cz + sa * rOut })
+      mv:append({ cx + ca * rIn,  yBot, cz + sa * rIn })
+      for k = 1, 4 do
+        mn:append({ 0, 1, 0 })
+        mt:append({ i / SEG, (k - 1) / 3 })
+      end
+      if i > 0 then
+        local prev = base - 4
+        -- the top face, and the outer wall
+        mf:append({ prev + 1, prev + 2, base + 2 })
+        mf:append({ prev + 1, base + 2, base + 1 })
+        mf:append({ prev + 2, prev + 3, base + 3 })
+        mf:append({ prev + 2, base + 3, base + 2 })
+      end
+    end
+    m:create()
+    local lm = m:getMesh()
+    if lm and lm.setTexture then lm:setTexture(wood_tex) end
+    mesh_rails[#mesh_rails + 1] = { mesh = m, x = 0, y = 0, z = 0 }
+  end
+  local ix, iz = halfW + RW * 2 - CR, halfH + RW * 2 - CR
+  corner( ix,  iz, 0)                 -- +x +z
+  corner(-ix,  iz, math.pi / 2)       -- -x +z
+  corner(-ix, -iz, math.pi)           -- -x -z
+  corner( ix, -iz, math.pi * 1.5)     -- +x -z
 
   mesh_ball  = buildSphere(mat_balls[0], tbl.BALL_R / U, 14)
   -- one sphere mesh per number so each carries its own face texture
@@ -887,7 +935,63 @@ function love.draw()
   love.graphics.setDepthMode()
   love.graphics.setMeshCullMode("none")
 
+  chipQueue = {}
   drawHUD()
+  drawChips()
+end
+
+-- The scoreboard's potted balls, as real GL spheres.
+--
+-- Rendered through their own orthographic-ish camera placed so that one
+-- dream unit maps to a known number of screen pixels: that lets a chip be
+-- positioned in HUD pixel coordinates while still being a lit, textured
+-- sphere rather than a flat disc.
+--
+-- No rotation is applied, so the number faces the player. The balls on the
+-- cloth keep their physical orientation -- a ball there should show the face
+-- it rolled to -- but a ball in the tray exists to be READ.
+function drawChips()
+  if #chipQueue == 0 then return end
+  local W, H = love.graphics.getWidth(), love.graphics.getHeight()
+
+  -- A camera looking down -Z at the HUD plane. Placing the eye at
+  -- (0,0,dist) with this fov makes the visible half-height exactly `half`
+  -- dream units, so screen pixels convert by a single scale factor.
+  local half = 6.0
+  local fov = 60
+  local dist = half / math.tan(math.rad(fov / 2))
+  local pxPerUnit = (H / 2) / half
+
+  local eye = dream.vec3(0, 0, dist)
+  local cam = dream:newCamera(dream.mat4({
+    1, 0, 0, eye.x,
+    0, 1, 0, eye.y,
+    0, 0, 1, eye.z,
+    0, 0, 0, 1,
+  }))
+  cam:setFov(fov)
+
+  dream:prepare()
+  -- a light in front so the chips are lit from the viewer's side
+  dream:addNewLight("point", dream.vec3(0, 2.5, dist * 0.8),
+                    dream.vec3(1, 0.98, 0.94), 55)
+
+  for _, c in ipairs(chipQueue) do
+    -- HUD pixels -> dream units on the z=0 plane
+    local ux = (c.x - W / 2) / pxPerUnit
+    local uy = -(c.y - H / 2) / pxPerUnit
+    local scale = (c.rad / pxPerUnit) / (tbl.BALL_R / U)
+    dream:draw(mesh_ball[c.num], dream.mat4({
+      scale, 0, 0, ux,
+      0, scale, 0, uy,
+      0, 0, scale, 0,
+      0, 0, 0, 1,
+    }))
+  end
+  dream:present(cam)
+
+  love.graphics.setDepthMode()
+  love.graphics.setMeshCullMode("none")
 end
 
 -- The six pockets, projected onto the cloth.
@@ -1010,10 +1114,35 @@ function drawHUD()
           ux, uy = ux / ul, uy / ul
           local px, py = -uy, ux            -- perpendicular
           local wButt, wTip = 11, 5
+
+          -- The SHAFT stops short of the tip: the last stretch is the pale
+          -- ferrule, capped with a thin band of blue chalk, like a real cue.
+          local ferL = math.min(ul * 0.16, 26)      -- ferrule length, px
+          local chkL = math.min(ul * 0.05, 8)       -- chalk band, px
+          local fx1, fy1 = tx - ux * (ferL + chkL), ty - uy * (ferL + chkL)
+          local wFer = wTip + (wButt - wTip) * (ferL + chkL) / math.max(ul, 1)
+          local cx1, cy1 = tx - ux * chkL, ty - uy * chkL
+          local wChk = wTip + (wButt - wTip) * chkL / math.max(ul, 1)
+
+          -- the stained shaft, butt to ferrule
           g.setColor(r, gg, bb)
           g.polygon("fill",
             bx + px * wButt, by + py * wButt,
             bx - px * wButt, by - py * wButt,
+            fx1 - px * wFer, fy1 - py * wFer,
+            fx1 + px * wFer, fy1 + py * wFer)
+          -- the pale ferrule
+          g.setColor(0.94, 0.92, 0.86)
+          g.polygon("fill",
+            fx1 + px * wFer, fy1 + py * wFer,
+            fx1 - px * wFer, fy1 - py * wFer,
+            cx1 - px * wChk, cy1 - py * wChk,
+            cx1 + px * wChk, cy1 + py * wChk)
+          -- and the blue chalk at the very tip
+          g.setColor(0.20, 0.38, 0.62)
+          g.polygon("fill",
+            cx1 + px * wChk, cy1 + py * wChk,
+            cx1 - px * wChk, cy1 - py * wChk,
             tx - px * wTip,  ty - py * wTip,
             tx + px * wTip,  ty + py * wTip)
           -- a darker edge so the cue reads against pale felt and pale balls
@@ -1052,18 +1181,18 @@ function drawHUD()
     g.polygon("fill", pts)
   end
 
+  -- Scoreboard chips are REAL GL SPHERES, not 2D discs: the same mesh and
+  -- the same texture as the balls on the cloth, so a potted ball looks like
+  -- the ball it was. They are queued here during HUD layout and drawn in
+  -- their own 3D pass afterwards (drawChips), because a 3D draw cannot be
+  -- interleaved with the 2D HUD.
+  --
+  -- Unlike the table balls they are drawn with NO rotation, so the number
+  -- faces the player. On the cloth a ball shows whatever face it rolled to,
+  -- which is correct; in the tray you want to read it.
   local function ballChip(num, x, y, rad)
-    local c = ballart.COLORS[num]
-    if not c then return end
-    if ballart.isStripe(num) then
-      disc(x, y, rad, 0.95, 0.94, 0.90)
-      g.setColor(c[1], c[2], c[3])
-      g.rectangle("fill", x - rad, y - rad * 0.44, rad * 2, rad * 0.88)
-    else
-      disc(x, y, rad, c[1], c[2], c[3])
-    end
-    -- a highlight in the same place the 3D balls carry theirs
-    disc(x - rad * 0.3, y - rad * 0.34, rad * 0.22, 1, 1, 1)
+    if not ballart.COLORS[num] then return end
+    chipQueue[#chipQueue + 1] = { num = num, x = x, y = y, rad = rad }
   end
 
   -- The panels live in the band ABOVE the table, side by side, where there

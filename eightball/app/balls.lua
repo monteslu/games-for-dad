@@ -97,64 +97,84 @@ function M.makeFaces()
       end
     end
 
-    -- Two number discs, on opposite sides, shaded to match.
+    -- The number disc goes AT THE POLE, not on the equator.
     --
-    -- The disc is an ELLIPSE in UV space so it lands as a CIRCLE on the
-    -- ball. The sphere unwrap runs u around the full 2*pi equator and v
-    -- across pi from pole to pole, so at the equator the u axis carries
-    -- twice the arc per unit that v does -- a UV circle renders as a 2:1
-    -- oval. Halving the u radius cancels exactly that.
+    -- The camera looks straight down, so what it sees of every ball is the
+    -- +Y pole -- and in this unwrap the pole is v=0, the top edge of the
+    -- texture, where the whole u range collapses to a single point. A disc
+    -- painted at the equator (v=0.5) sits on the ball's SIDE and reads as a
+    -- smear at the rim, which is exactly what it did.
+    --
+    -- So the disc is drawn in POLAR terms: every texel within an angular
+    -- radius of the pole. Because u wraps all the way around there, this is
+    -- a horizontal BAND across the top of the texture, and it lands on the
+    -- ball as a clean circle facing the camera. A second band at the bottom
+    -- puts a number on the other pole, so a rolled ball still shows one.
     if n > 0 then
-      for _, cx in ipairs({ S * 0.25, S * 0.75 }) do
-        local cy, rad = S * 0.5, S * 0.155
-        local radU = rad * 0.5            -- u is stretched 2x; compensate
-        for y = math.floor(cy - rad), math.ceil(cy + rad) do
-          for x = math.floor(cx - radU), math.ceil(cx + radU) do
-            if x >= 0 and x < S and y >= 0 and y < S then
-              local dx, dy = (x - cx) / radU, (y - cy) / rad
-              if dx * dx + dy * dy <= 1 then
-                local diff, spec = shade((x + 0.5) / S, (y + 0.5) / S)
-                d:setPixel(x, y,
-                  math.min(1, 0.97 * diff + spec),
-                  math.min(1, 0.96 * diff + spec),
-                  math.min(1, 0.93 * diff + spec), 1)
-              end
+      local capV = 0.22                     -- angular size of the number cap
+      local function stampCap(vTop)
+        -- rows within the cap, measured from whichever pole
+        local y0 = vTop and 0 or math.floor(S * (1 - capV))
+        local y1 = vTop and math.ceil(S * capV) or S - 1
+        for y = y0, y1 do
+          local v = (y + 0.5) / S
+          local t = vTop and (v / capV) or ((1 - v) / capV)   -- 0 at pole, 1 at edge
+          if t <= 1 then
+            for x = 0, S - 1 do
+              local diff, spec = shade((x + 0.5) / S, v)
+              d:setPixel(x, y,
+                math.min(1, 0.97 * diff + spec),
+                math.min(1, 0.96 * diff + spec),
+                math.min(1, 0.93 * diff + spec), 1)
             end
           end
         end
-        local s = tostring(n)
+
+        -- The numeral, by INVERSE mapping: walk every texel in the cap,
+        -- work out where it lands on the flat disc the player sees, and ask
+        -- the glyph whether that spot is ink. Stamping forward instead (for
+        -- each glyph pixel, find its texel) leaves gaps and overlaps,
+        -- because the u spacing changes with every row -- it came out as
+        -- scribble.
+        local str = tostring(n)
         local gw, gh = 3, 5
-        -- The glyph is squashed in u for the same reason as the disc, and
-        -- SIZED TO FIT INSIDE IT. Getting this wrong is silent: an oversized
-        -- numeral simply falls outside the disc's ellipse test and the ball
-        -- comes out blank, which is what happened at the first attempt.
-        local py = math.max(3, math.floor(rad * 1.30 / gh))
-        local px = math.max(2, math.floor(py * 0.5))
-        local totalW = (#s * (gw + 1) - 1) * px
-        local ox = cx - totalW / 2
-        local oy = cy - (gh * py) / 2
-        for i = 1, #s do
-          local glyph = DIGITS[s:sub(i, i)]
-          if glyph then
-            for gy = 1, gh do
-              for gx = 1, gw do
-                if glyph[gy]:sub(gx, gx) == "1" then
-                  for yy = 0, py - 1 do
-                    for xx = 0, px - 1 do
-                      local tx = math.floor(ox + ((i - 1) * (gw + 1) + gx - 1) * px + xx)
-                      local ty = math.floor(oy + (gy - 1) * py + yy)
-                      if tx >= 0 and tx < S and ty >= 0 and ty < S then
-                        local diff = shade((tx + 0.5) / S, (ty + 0.5) / S)
-                        d:setPixel(tx, ty, 0.09 * diff, 0.09 * diff, 0.10 * diff, 1)
-                      end
-                    end
-                  end
+        local cols = #str * gw + (#str - 1)          -- cells across, 1 gap
+        local scale = 0.62                            -- glyph size within cap
+        for y = y0, y1 do
+          local v = (y + 0.5) / S
+          local rr = vTop and (v / capV) or ((1 - v) / capV)
+          if rr <= 1 then
+            for x = 0, S - 1 do
+              local u = (x + 0.5) / S
+              local aa = u * math.pi * 2
+              -- position on the flat disc, -1..1
+              -- a quarter turn from the naive mapping: without it the
+              -- numerals come out lying on their side
+              local fx = -rr * math.cos(aa)
+              local fy = -rr * math.sin(aa)
+              if not vTop then fy = -fy end
+              -- into glyph cells
+              local gxr = fx / scale * (cols / 2) + cols / 2
+              local gyr = fy / scale * (gh / 2) + gh / 2
+              local gx = math.floor(gxr) + 1
+              local gy = math.floor(gyr) + 1
+              if gy >= 1 and gy <= gh and gx >= 1 and gx <= cols then
+                -- which digit, and which cell within it
+                local di = math.floor((gx - 1) / (gw + 1)) + 1
+                local cx2 = (gx - 1) % (gw + 1) + 1
+                local ch2 = str:sub(di, di)
+                local glyph = DIGITS[ch2]
+                if glyph and cx2 <= gw and glyph[gy]:sub(cx2, cx2) == "1" then
+                  local dd = shade(u, v)
+                  d:setPixel(x, y, 0.09 * dd, 0.09 * dd, 0.10 * dd, 1)
                 end
               end
             end
           end
         end
       end
+      stampCap(true)
+      stampCap(false)
     end
 
     faces[n] = love.graphics.newImage(d)
