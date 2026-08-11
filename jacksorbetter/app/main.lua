@@ -1,5 +1,6 @@
 -- JACKS OR BETTER - video poker for Dad.
 -- Whole control scheme: LEFT/RIGHT moves, A confirms. That's it.
+-- On a touch screen it's even less: tap a card to hold it, tap the button.
 -- $1000 bankroll, $5 a hand, and the stack quietly refills if it ever
 -- runs dry - no pressure, no fear of losing, play forever.
 
@@ -38,7 +39,11 @@ DECK.cx = W - 150
 DECK.cy = 40 + (theme.cardH * DECK.scale) / 2
 
 local BTN = {w = 320, h = 96}
-BTN.x, BTN.y = (W - BTN.w) / 2, H - 240
+-- hint line right under the cards, button BELOW it — a thumb aiming at
+-- DEAL/DRAW never hovers over the hand (held cards tuck down 36px, so the
+-- hint clears them too)
+local HINT_Y = 856
+BTN.x, BTN.y = (W - BTN.w) / 2, HINT_Y + theme.fontSmall + 16
 
 function love.load()
   cards.loadArt()
@@ -74,6 +79,40 @@ local function readEdges()
 end
 local function confirmPressed() return edges.b or edges.a end
 local confirmHeld = false     -- release gate: must let go before next deal
+
+-- Touch / mouse taps. Raw wc.pointer polling across all ten slots (0 is
+-- the mouse, 1..9 are fingers) - a game that reads only love.mouse works
+-- on a desk and ignores every touch on a phone. Deliberately NOT
+-- love.mousepressed: on a pad-only host that callback synthesizes a click
+-- from the same A press confirmPressed() already consumes, and one press
+-- must never both confirm and click. A tap is a slot's press EDGE; it
+-- shares the pad's debounce window and feeds the same shuffle entropy.
+local ptrPrev = {}
+local tapX, tapY = nil, nil   -- this frame's tap position, or nil
+local lastTapFrame = -100
+local function readTaps()
+  tapX, tapY = nil, nil
+  for slot = 0, 9 do
+    local x, y, buttons, active = wc.pointer(slot)
+    local down = active and buttons ~= 0
+    if down and not ptrPrev[slot]
+       and tapX == nil
+       and (frameNo - lastTapFrame) >= DEBOUNCE then
+      tapX, tapY = x, y
+      lastTapFrame = frameNo
+      cards.stir(frameNo)              -- human timing -> shuffle entropy
+    end
+    ptrPrev[slot] = down
+  end
+end
+-- Hit test against this frame's tap. `pad` grows the target - fingers are
+-- blunter than cursors, and Dad's doubly so.
+local function tapIn(x, y, w, h, pad)
+  pad = pad or 0
+  return tapX ~= nil
+     and tapX >= x - pad and tapX < x + w + pad
+     and tapY >= y - pad and tapY < y + h + pad
+end
 
 local function dealHand()
   if bankroll < BET then         -- never bust: quietly refill the stack
@@ -154,11 +193,19 @@ end
 
 function love.update(dt)
   readEdges()
+  readTaps()
   anim.update(dt)
 
   if state == "drawing" and not anim.busy() then settle() end
 
   if state == "result" then
+    -- A tap is a fresh press by construction, so it skips the pad's
+    -- release gate: you cannot "still be holding" a tap from last hand.
+    if tapIn(BTN.x, BTN.y, BTN.w, BTN.h, 24) then
+      refillMsg = false
+      dealHand()
+      return
+    end
     if confirmHeld then
       if not (love.pad.isDown("a") or love.pad.isDown("b")) then confirmHeld = false end
     elseif confirmPressed() then
@@ -169,6 +216,10 @@ function love.update(dt)
   end
 
   if state == "idle" then
+    if tapIn(BTN.x, BTN.y, BTN.w, BTN.h, 24) then
+      dealHand()
+      return
+    end
     if confirmHeld then                 -- wait for the release after a skip
       if not (love.pad.isDown("a") or love.pad.isDown("b")) then confirmHeld = false end
     elseif confirmPressed() then
@@ -178,6 +229,23 @@ function love.update(dt)
   end
 
   if state == "holding" then
+    if tapIn(BTN.x, BTN.y, BTN.w, BTN.h, 24) then
+      drawPhase()
+      return
+    end
+    if tapX then
+      for i = 1, 5 do
+        -- The rect tracks the draw position: a held card sits holdLift
+        -- lower, and its tap target moves with it.
+        local y = slotY + (hand[i].held and theme.holdLift or 0)
+        if tapIn(slotX[i], y, theme.cardW, theme.cardH, 12) then
+          focus = i
+          hand[i].held = not hand[i].held
+          sounds.play("place", 0.8)
+          break
+        end
+      end
+    end
     -- DOWN drops to the DRAW button (it sits below the cards, so down is
     -- the natural motion); UP climbs back to the middle card.
     if edges.down then focus = 0 end
@@ -201,23 +269,34 @@ function love.update(dt)
   end
 end
 
+-- Two columns, 5 + 4: half the height of the old single column, so the
+-- top strip keeps clear air for the result banner. Values in win-green -
+-- they're the good news - except inside the gold highlight, where ink
+-- stays readable.
 local function drawPaytable()
   local g = love.graphics
   g.setFont(ui.font(theme.fontMid))
-  local x, y = 60, 36
   local step = theme.fontMid + 8
-  for _, row in ipairs(poker.paytableRows) do
+  -- column 2 is narrower so its dollar column ends before the title,
+  -- which owns the top-right corner
+  local colX, colW, perCol = {60, 700}, {560, 420}, 5
+  for i, row in ipairs(poker.paytableRows) do
     local key, name, mult = row[1], row[2], row[3]
+    local col = (i > perCol) and 2 or 1
+    local x, w = colX[col], colW[col]
+    local y = 36 + ((i - 1) % perCol) * step
     if resultKey == key then
       g.setColor(theme.gold)
-      g.rectangle("fill", x - 12, y - 2, 700, step)
+      g.rectangle("fill", x - 12, y - 2, w + 24, step)
       g.setColor(theme.ink)
+      g.print(name, x, y)
+      g.printf("$" .. (mult * BET), x, y, w, "right")
     else
       g.setColor(theme.quiet)
+      g.print(name, x, y)
+      g.setColor(theme.win)
+      g.printf("$" .. (mult * BET), x, y, w, "right")
     end
-    g.print(name, x, y)
-    g.printf("$" .. (mult * BET), x, y, 620, "right")
-    y = y + step
   end
 end
 
@@ -268,31 +347,31 @@ function love.draw()
     end
   end
 
-  -- the one button
+  -- the one button: hint first, button beneath it
   if state == "idle" or state == "result" then
+    g.setFont(ui.font(theme.fontSmall))
+    g.setColor(theme.dim)
+    g.printf("tap DEAL - or press A", 0, HINT_Y, W, "center")
     ui.button("DEAL", BTN.x, BTN.y, BTN.w, BTN.h, true)
-    g.setFont(ui.font(theme.fontSmall))
-    g.setColor(theme.dim)
-    g.printf("press A to deal", 0, BTN.y + BTN.h + 12, W, "center")
   elseif state == "holding" then
-    ui.button("DRAW", BTN.x, BTN.y, BTN.w, BTN.h, focus == 0)
     g.setFont(ui.font(theme.fontSmall))
     g.setColor(theme.dim)
-    g.printf("LEFT/RIGHT choose a card - A holds it - DOWN then A to DRAW",
-             0, BTN.y + BTN.h + 12, W, "center")
+    g.printf("tap a card to hold it, then tap DRAW - or LEFT/RIGHT and A",
+             0, HINT_Y, W, "center")
+    ui.button("DRAW", BTN.x, BTN.y, BTN.w, BTN.h, focus == 0)
   end
 
-  -- result banner: centered in the clear space RIGHT of the paytable
+  -- result banner: centered in the clear strip between paytable and cards
   if resultText then
     local up = lastWin > 0
     g.setFont(ui.font(up and theme.fontHuge or theme.fontBig))
     g.setColor(up and theme.win or theme.quiet)
-    g.printf(resultText, 780, 220, W - 780 - 40, "center")
+    g.printf(resultText, 0, 276, W, "center")
   end
   if refillMsg then
     g.setFont(ui.font(theme.fontMid))
     g.setColor(theme.gold)
-    g.printf("FRESH STACK - ON THE HOUSE", 780, 150, W - 780 - 40, "center")
+    g.printf("FRESH STACK - ON THE HOUSE", 0, 216, W, "center")
   end
 
   ui.drawMoney(bankroll, BET, lastWin, moneyMood)

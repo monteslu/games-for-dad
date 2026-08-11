@@ -1,8 +1,8 @@
 -- SEVEN CARD STUD - heads-up against the dealer.
--- Real structure: 2 down + 1 up (low door card acts first - the bring-in),
--- then three more up cards (best showing hand acts first), a final DOWN
--- card, and showdown: best 5 of your 7. Dealer's three hidden cards flip
--- at the end.
+-- Structure: 2 down + 1 up, then three more up cards, a final DOWN card,
+-- and showdown: best 5 of your 7. The best SHOWING hand opens the betting
+-- on every street (the home rule - no casino bring-in). Dealer's three
+-- hidden cards flip at the end.
 -- Family law: LEFT/RIGHT + A. $1000, $5 flat, never busts, quiet losses.
 
 local theme  = require("lib.theme")
@@ -37,10 +37,12 @@ end
 
 local DECK = {scale = 0.55}
 DECK.cx = 1440
-DECK.cy = 344
+DECK.cy = 170       -- clearly ABOVE the dealer's row, or it reads as his 8th card
 
 local MENU = {}
-local MENU_X, MENU_Y0, MENU_W, MENU_H, MENU_GAP = 1600, 540, 300, 92, 22
+-- gap sized so a 3-item menu FILLS the column: FOLD lands just above the
+-- money row instead of leaving dead felt below
+local MENU_X, MENU_Y0, MENU_W, MENU_H, MENU_GAP = 1600, 540, 300, 92, 80
 
 -- ── state ─────────────────────────────────────────────────────────────
 local bankroll = START_BANK
@@ -83,6 +85,39 @@ local function readEdges()
 end
 local function confirmPressed() return edges.b or edges.a end
 local confirmHeld = false
+
+-- Taps: poll ALL ten pointer slots (0 = mouse, 1-9 = touch fingers) - a
+-- mouse-only read ignores every touch on a phone. Deliberately NOT
+-- love.mousepressed: on a pad-only host that callback synthesizes a click
+-- from the same A press confirmPressed() already consumes, and one press
+-- must never both confirm and click. A tap is a slot's press EDGE; it
+-- shares the pad's debounce window and feeds the same shuffle entropy.
+local ptrPrev = {}
+local tapX, tapY = nil, nil   -- this frame's tap position, or nil
+local lastTapFrame = -100
+local function readTaps()
+  tapX, tapY = nil, nil
+  for slot = 0, 9 do
+    local x, y, buttons, active = wc.pointer(slot)
+    local down = active and buttons ~= 0
+    if down and not ptrPrev[slot]
+       and tapX == nil
+       and (frameNo - lastTapFrame) >= DEBOUNCE then
+      tapX, tapY = x, y
+      lastTapFrame = frameNo
+      cards.stir(frameNo)              -- human timing -> shuffle entropy
+    end
+    ptrPrev[slot] = down
+  end
+end
+-- Hit test against this frame's tap. `pad` grows the target - fingers are
+-- blunter than cursors, and Dad's doubly so.
+local function tapIn(x, y, w, h, pad)
+  pad = pad or 0
+  return tapX ~= nil
+     and tapX >= x - pad and tapX < x + w + pad
+     and tapY >= y - pad and tapY < y + h + pad
+end
 
 function love.load()
   cards.loadArt()
@@ -147,10 +182,9 @@ local function dealerHas()
 end
 
 local function playerActsFirst()
-  if street == 3 then
-    -- the bring-in: LOWEST door card opens third street
-    return cards.val[pHand[3].rank] <= cards.val[dHand[3].rank]
-  end
+  -- The HIGH board opens every street, third included - the home rule,
+  -- same as five stud. (The casino bring-in has the LOW door card open
+  -- third street, which just looks wrong at the kitchen table.)
   local p, d = boardStrength(pHand), boardStrength(dHand)
   if p[1] ~= d[1] then return p[1] > d[1] end
   return p[2] >= d[2]
@@ -353,6 +387,7 @@ end
 
 function love.update(dt)
   readEdges()
+  readTaps()
   anim.update(dt)
 
   if waitTimer > 0 then
@@ -377,7 +412,7 @@ function love.update(dt)
   if state == "idle" or state == "result" then
     if confirmHeld then
       if not (love.pad.isDown("a") or love.pad.isDown("b")) then confirmHeld = false end
-    elseif confirmPressed() then
+    elseif confirmPressed() or tapIn(1600, 540, 300, 96, 24) then
       refillMsg = false
       startHand()
     end
@@ -391,9 +426,29 @@ function love.update(dt)
     if edges.right or edges.down then
       focus = focus + 1; if focus > #MENU then focus = 1 end
     end
-    if confirmPressed() and MENU[focus] then
+    local tapped = nil
+    for i = 1, #MENU do
+      if tapIn(MENU_X, MENU_Y0 + (i - 1) * (MENU_H + MENU_GAP),
+               MENU_W, MENU_H, 12) then
+        tapped = i
+      end
+    end
+    if tapped then focus = tapped end
+    if (confirmPressed() or tapped) and MENU[focus] then
       local act = MENU[focus].act
-      actionLine = nil
+      -- INSTANT feedback: the press lands on screen (and in the ear) the
+      -- same frame, BEFORE the dealer starts thinking - a silent half
+      -- second after a tap reads as a dead button
+      if act == "check" then
+        actionLine = "YOU CHECK"
+        sounds.play("place", 0.6)
+      elseif act == "bet" then
+        actionLine = "YOU BET $" .. BET
+      elseif act == "raise" then
+        actionLine = "YOU RAISE $" .. BET
+      elseif act == "call" then
+        actionLine = "YOU CALL"
+      end
       if act == "check" then
         state = "dealer_act"
         pause(24, function()
@@ -497,14 +552,11 @@ function love.draw()
       ui.button(m.label, MENU_X, MENU_Y0 + (i - 1) * (MENU_H + MENU_GAP),
                 MENU_W, MENU_H, focus == i)
     end
-    g.setFont(ui.font(theme.fontSmall))
-    g.setColor(theme.dim)
-    g.printf("UP/DOWN choose - A confirms", 1580, MENU_Y0 + #MENU * (MENU_H + MENU_GAP) + 8, 340, "center")
   elseif state == "idle" or state == "result" then
     ui.button("DEAL", 1600, 540, 300, 96, true)
     g.setFont(ui.font(theme.fontSmall))
     g.setColor(theme.dim)
-    g.printf("press A to deal", 1600, 648, 300, "center")
+    g.printf("tap DEAL - or press A", 1600, 648, 300, "center")
   end
 
   if dealerLine and state ~= "result" then
@@ -528,10 +580,16 @@ function love.draw()
     g.printf("FRESH STACK - ON THE HOUSE", 60, 462, 1400, "center")
   end
 
-  ui.drawMoney(bankroll, BET, nil, moneyMood)
+  -- money row: everything stays LEFT of the button column
+  g.setFont(ui.font(theme.fontBig))
+  if moneyMood == "win" then g.setColor(theme.winRing)
+  elseif moneyMood == "loss" then g.setColor(theme.lossRed)
+  else g.setColor(theme.white) end
+  g.print("BANKROLL  $" .. bankroll, 60, H - 70)
+  g.setColor(theme.quiet)
+  g.print("BET  $" .. BET, 700, H - 70)
   if staked > 0 and state ~= "idle" then
-    g.setFont(ui.font(theme.fontBig))
     g.setColor(theme.gold)
-    g.print("POT  $" .. (staked * 2), W - 420, H - 70)
+    g.print("POT  $" .. (staked * 2), 1120, H - 70)
   end
 end

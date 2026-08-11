@@ -15,6 +15,7 @@ wasmcart player runs.
 | Jacks or Better | `jacksorbetter/` | Classic video poker. Hold, draw, win on a pair of jacks or better. |
 | Five Card Stud | `fivecardstud/` | Heads-up stud against the dealer. One hole card, bet street by street. |
 | Seven Card Stud | `sevencardstud/` | The full game: two down, four up, one more down, best five of seven. |
+| Spades | `spades/` | Partnership Spades: you and a CPU partner against two CPUs. Books, bags, nil, first team to 500. |
 
 ## Playing
 
@@ -33,9 +34,11 @@ Controls, in every game:
   wrong confirm button.
 - That is the entire scheme.
 
-Money rules, in every game: $1000 stack, $5 flat bet, and the bankroll
-can never bust. If you cannot cover the next bet, the house refills you
-with a fresh stack, cheerfully.
+Money rules, in every poker game: $1000 stack, $5 flat bet, and the
+bankroll can never bust. If you cannot cover the next bet, the house
+refills you with a fresh stack, cheerfully. Spades keeps score in
+points instead — its native currency — first team to 500, same laws
+mapped onto the scoreboard (wins loud, losses quiet, nothing shames).
 
 ## Repo layout
 
@@ -60,8 +63,8 @@ npx wasmcart pack --wasm main.wasm --assets app \
 
 Code is [MIT](LICENSE).
 
-- Card faces: adapted from Byron Knoll's public-domain (CC0) vector
-  playing cards, pre-scaled to the exact drawn size.
+- Card faces: Byron Knoll's public-domain (CC0) vector playing cards
+  (the full-court J/Q/K variants), pre-scaled to the exact drawn size.
 - Sounds: card and chip one-shots from Kenney's CC0 audio packs.
 - Font: Atkinson Hyperlegible Bold, by the Braille Institute. The font
   remains under its own SIL Open Font License. Chosen because it is
