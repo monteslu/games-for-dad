@@ -22,7 +22,11 @@ function lib:buildScene(shadowPass, dynamic, alpha, cam, blacklist, frustumCheck
 	--use a scene here
 	local scene = self:newScene(shadowPass, dynamic, alpha, cam, blacklist, frustumCheck, canvases, light, isSun)
 	
-	for _, pair in ipairs(self.renderTasks) do
+	-- Indexed to renderTaskCount, NOT ipairs: the list is pooled across
+	-- frames, so entries beyond the live count are last frame's objects and
+	-- would be drawn again.
+	for i = 1, self.renderTaskCount or #self.renderTasks do
+		local pair = self.renderTasks[i]
 		if pair[1].isMesh then
 			scene:addMesh(pair[1], pair[2], lib.defaultReflection)
 		elseif pair[2] then

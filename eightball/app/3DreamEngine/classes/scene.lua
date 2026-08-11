@@ -189,15 +189,37 @@ function class:addMesh(mesh, transform, reflection, scale)
 	
 	local dist = self.alpha and (pos - self.cam.position):lengthSquared() or 0
 	
-	--create task object
-	local task = setmetatable({
-		mesh,
-		transform,
-		pos,
-		shader,
-		reflection,
-		dist
-	}, lib.meta.task)
+	--create task object, recycled from the pool
+	--
+	-- Every mesh in every scene allocated a fresh 6-field table with a
+	-- metatable, every frame. A cart drawing ~20 meshes across 3 scenes a
+	-- frame burned 60 of these per frame plus the vec3 in getPosition. Tasks
+	-- are read by the render loop within the same frame and never retained
+	-- past it, so a global pool is safe -- and the pool is indexed by a
+	-- monotonic counter reset in newScene, so the SAME task object is not
+	-- handed out twice inside one frame.
+	local pool = lib.taskPool
+	local pi = lib.taskPoolUsed + 1
+	lib.taskPoolUsed = pi
+	local task = pool[pi]
+	if task then
+		task[1] = mesh
+		task[2] = transform
+		task[3] = pos
+		task[4] = shader
+		task[5] = reflection
+		task[6] = dist
+	else
+		task = setmetatable({
+			mesh,
+			transform,
+			pos,
+			shader,
+			reflection,
+			dist
+		}, lib.meta.task)
+		pool[pi] = task
+	end
 	
 	--add to list
 	self:addTo(task, shader, mesh.material)
@@ -233,20 +255,31 @@ function class:getIterator()
 			return self.tasks[i]
 		end
 	else
-		local co = coroutine.create(function()
-			for _, shaderGroup in pairs(self.tasks) do
-				for _, materialGroup in pairs(shaderGroup) do
-					for _, task in pairs(materialGroup) do
-						coroutine.yield(task)
-					end
+		-- Flattened into a reused buffer instead of a coroutine.
+		--
+		-- This created a coroutine plus two closures per scene per frame, and
+		-- a coroutine is one of the most expensive objects Lua can allocate
+		-- (it carries its own stack). The traversal order is identical -- the
+		-- same nested pairs() walk, just done eagerly into a list.
+		local flat = self.flatTasks
+		if not flat then
+			flat = { }
+			self.flatTasks = flat
+		end
+		local n = 0
+		for _, shaderGroup in pairs(self.tasks) do
+			for _, materialGroup in pairs(shaderGroup) do
+				for _, task in pairs(materialGroup) do
+					n = n + 1
+					flat[n] = task
 				end
 			end
-		end)
-		
+		end
+		local i = 0
 		return function()
-			local ok, task = coroutine.resume(co)
-			if ok then
-				return task
+			i = i + 1
+			if i <= n then
+				return flat[i]
 			end
 		end
 	end

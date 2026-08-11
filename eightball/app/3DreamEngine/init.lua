@@ -255,7 +255,22 @@ end
 ---Clears the current scene
 function lib:prepare()
 	self.lighting = { }
-	self.renderTasks = { }
+	-- Reuse the render-task list and its pair tables rather than throwing
+	-- both away every prepare(). A scene of N meshes allocated N+1 tables per
+	-- prepare(), and a cart that calls prepare()/present() more than once a
+	-- frame (a 2D layer between two 3D passes) multiplies that. The pairs are
+	-- read once by render.lua and never retained, so pooling them is safe.
+	-- renderTaskCount is the live length; entries past it are stale and must
+	-- not be walked.
+	self.renderTaskCount = 0
+	self.renderTasks = self.renderTasks or { }
+
+	-- Scene task pool (see classes/scene.lua addMesh). Reset here, at the
+	-- START OF A FRAME'S SCENE BUILD, rather than in newScene: a frame may
+	-- build several scenes and they are all live at once, so resetting per
+	-- scene would hand the same task object to two of them.
+	self.taskPool = self.taskPool or { }
+	self.taskPoolUsed = 0
 	
 	--keep track of reflections
 	self.lastReflections = self.reflections or { }
@@ -292,8 +307,16 @@ function lib:draw(object, x, y, z, sx, sy, sz)
 		})
 	end
 	
-	--add to scene
-	table.insert(self.renderTasks, { object, transform })
+	--add to scene, reusing the pair table from the previous frame
+	local n = self.renderTaskCount + 1
+	self.renderTaskCount = n
+	local pair = self.renderTasks[n]
+	if pair then
+		pair[1] = object
+		pair[2] = transform
+	else
+		self.renderTasks[n] = { object, transform }
+	end
 end
 
 ---Add a light
