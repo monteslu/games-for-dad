@@ -82,10 +82,13 @@ local aimAngle = 0
 -- distracted player loses nothing.
 local pull = 0
 local dragging = false
--- Max pull is the table's half-height: a full-power drag reaches from the
--- cue ball to the top or bottom rail, so the gesture never runs out of
--- screen no matter how big the table is drawn.
-local PULL_MIN, PULL_MAX = 0, tbl.H
+-- Max pull reaches from the TOP RAIL to the TOP OF THE SCREEN -- the empty
+-- band above the table, which is the room the gesture actually has. Derived
+-- from the live projection rather than hardcoded, so it stays correct if the
+-- camera framing ever changes. pullMax() falls back to the table half-height
+-- on the first frame, before a projection exists.
+local PULL_MIN = 0
+local PULL_MAX = 380       -- refreshed every frame by pullMax()
 -- The stick fades cream -> red across that range (monteslu's 2012 colours).
 local STICK_NEAR = { 254 / 255, 232 / 255, 214 / 255 }
 local STICK_FAR  = { 1, 0, 0 }
@@ -94,7 +97,16 @@ local rollFrames = 0
 local cpuThink = 0
 local placeX, placeZ = 0, 0
 
-local SHOT_IMPULSE = 5.6  -- tuned so full power breaks a rack convincingly
+-- Cue-ball speed at full power, in METRES PER SECOND. A real break is
+-- 7-11 m/s; a soft positional roll is about 1.
+--
+-- This used to be an arbitrary impulse constant that worked out to 470 m/s.
+-- At that speed the cue ball crosses 500 px in a single 1/60 s step -- more
+-- than ten ball-widths -- so it passed clean THROUGH the rack, contacting
+-- one ball on the way. The break looked instant and nothing scattered.
+-- Speed is the honest unit here, and the impulse is derived from the ball's
+-- actual mass so it stays right if the ball size ever changes.
+local SHOT_V_MIN, SHOT_V_MAX = 0.7, 11.0
 
 -- ── input: the family readEdges pattern ───────────────────────────────
 -- 9-frame debounce and edge detection done by hand from the raw down state.
@@ -197,6 +209,36 @@ local function quatMat(qx, qy, qz, qw, tx, ty, tz)
   })
 end
 
+-- How far the cue may be drawn back, in TABLE pixels.
+--
+-- The limit is the SMALLEST margin around the table, not the largest. A pull
+-- has to be equally achievable in every direction: if the cap came from the
+-- generous gap above the table, a player aiming sideways would run out of
+-- screen before reaching full power and the same gesture would mean
+-- different things depending on which way they were shooting.
+--
+-- Derived from the live projection so it stays correct if the camera
+-- framing changes, with a fallback for the first frame before one exists.
+local function pullMax()
+  local W, H = love.graphics.getWidth(), love.graphics.getHeight()
+  local _, topY = worldToScreen(0, -tbl.H)
+  local _, midY = worldToScreen(0, 0)
+  local leftX   = worldToScreen(-tbl.W, 0)
+  local midX    = worldToScreen(0, 0)
+  if not (topY and midY and leftX and midX) then return tbl.H end
+
+  local pxPerTablePy = math.abs(midY - topY) / tbl.H
+  local pxPerTablePx = math.abs(midX - leftX) / tbl.W
+  if pxPerTablePy < 0.0001 or pxPerTablePx < 0.0001 then return tbl.H end
+
+  -- screen gap from each rail to the edge of the display, in table units
+  local gapTop  = topY / pxPerTablePy
+  local gapSide = leftX / pxPerTablePx
+  local margin = math.min(gapTop, gapSide)
+  -- plus the half-table the cue can always travel across
+  return math.max(120, margin + math.min(tbl.W, tbl.H))
+end
+
 -- ── geometry builders ─────────────────────────────────────────────────
 -- Built through 3Dream's own buffers (getOrCreateBuffer + append), the path
 -- its .obj loader uses. Assigning plain Lua tables to mesh.vertices looks
@@ -260,7 +302,7 @@ end
 -- ── setup ─────────────────────────────────────────────────────────────
 local function addBall(num, x, z)
   local b = b3.body_new(world, x, tbl.BALL_R + 10, z)
-  local s = b3.shape_sphere(b, tbl.BALL_R, 1.7)
+  local s = b3.shape_sphere(b, tbl.BALL_R, tbl.MAT.ballDensity)
   local M = tbl.MAT.ball
   b3.shape_set_material(s, M.friction, M.restitution, M.rolling)
   -- Damping is what STOPS a ball, and it has to be split the right way or
@@ -273,9 +315,17 @@ local function addBall(num, x, z)
   -- only through rolling resistance, which is the real mechanism.
   b3.body_set_linear_damping(b, 0.28)
   b3.body_set_angular_damping(b, 0.06)
-  b3.body_set_bullet(b, true)            -- a hard shot can cross a cushion
+  -- Bullet (continuous collision) ONLY on the cue ball.
+  --
+  -- It is there so a hard break cannot tunnel through a cushion, and the cue
+  -- ball is the only one that ever travels fast enough to need it. Turning
+  -- it on for all sixteen made the solver treat the touching rack as one
+  -- welded mass -- a measured 1 of 15 object balls moved on a full-power
+  -- break. Racked balls are in resting contact; they want the ordinary
+  -- discrete solver, which propagates an impulse down the chain.
+  b3.body_set_bullet(b, num == 0)
   b3.shape_enable_hit_events(s, true)
-  b3.body_set_sleep_threshold(b, 7)
+  b3.body_set_sleep_threshold(b, 0.02 * tbl.PPM)   -- ~2 cm/s
   local rec = { num = num, body = b, shape = s, pocketed = false, x = x, z = z }
   balls[#balls + 1] = rec
   return rec
@@ -315,8 +365,13 @@ function love.load()
   dream.canvases:setMode("direct")   -- no deferred g-buffer; see the spike notes
   dream:init()
 
-  world = b3.world_new(0, -980, 0)
-  b3.world_set_hit_threshold(world, 55)
+  -- The metre scale must be set BEFORE the world exists: every length that
+  -- follows (gravity, shape radii, thresholds) is converted through it.
+  b3.set_meter(tbl.PPM)
+  -- gravity in px/s^2: 9.81 m/s^2 at the table's own scale. Hardcoding 980
+  -- was right only for the old (wrong) 64 px/m.
+  world = b3.world_new(0, -9.81 * tbl.PPM, 0)
+  b3.world_set_hit_threshold(world, 0.6 * tbl.PPM)  -- ~0.6 m/s
   table3d = tbl.build(world)
 
   sounds.loadAll()
@@ -419,10 +474,12 @@ local function anyMoving()
 end
 
 local function fire(angle, pow)
-  local imp = SHOT_IMPULSE * (0.22 + pow * 0.78)
+  -- impulse = mass * desired velocity, in the binding's px units
+  local v = SHOT_V_MIN + (SHOT_V_MAX - SHOT_V_MIN) * pow
+  local imp = b3.body_mass(cue.body) * v * b3.get_meter()
   b3.body_set_awake(cue.body, true)
-  local ix = math.cos(angle) * imp * 1000
-  local iz = math.sin(angle) * imp * 1000
+  local ix = math.cos(angle) * imp
+  local iz = math.sin(angle) * imp
   -- Strike slightly ABOVE centre, as a real cue does.
   --
   -- An impulse through the centre of mass produces no torque at all, so the
@@ -600,7 +657,12 @@ function love.update(dt)
   readClicks()
 
   if state.phase == "roll" then
-    b3.world_step(world, 1 / 60, 6)
+    -- Two half-steps per frame, 8 substeps each. A break sends the cue ball
+    -- across a third of a ball-width per substep; coarser than this and a
+    -- fast ball can pass between two racked balls without registering a
+    -- contact, which is exactly how a break ends up moving one ball.
+    b3.world_step(world, 1 / 120, 8)
+    b3.world_step(world, 1 / 120, 8)
     observe()
     rollFrames = rollFrames + 1
     -- settle: everything asleep, or a hard cap so a stuck ball cannot hang
@@ -672,6 +734,8 @@ function love.update(dt)
 
   -- ── the player's shot: aim, pull back, strike ───────────────────────
   if state.phase == "aim" then
+    -- the cap depends on the projection, so it is refreshed live
+    PULL_MAX = pullMax()
     local step = 0.014
     if heldLeft()  then aimAngle = aimAngle - step end
     if heldRight() then aimAngle = aimAngle + step end
@@ -704,8 +768,24 @@ function love.update(dt)
         local dx, dy = clickHeld.x - sx, clickHeld.y - sy
         local d = math.sqrt(dx * dx + dy * dy)
         if d > 20 then
-          -- the cue sits BEHIND the ball, so the shot goes opposite the drag
-          aimAngle = math.atan(-dy, -dx)
+          -- The shot travels OPPOSITE the drag: pull the cue back away from
+          -- where you want the ball to go, exactly like a real cue.
+          --
+          -- screen y grows DOWNWARD while the table's z grows the other way
+          -- through the projection, so the vertical component has to be
+          -- un-flipped before the angle is taken. Negating both components
+          -- of a y-flipped vector rotates the aim about the wrong axis,
+          -- which read as the whole thing being mirrored.
+          -- The shot travels OPPOSITE the drag: pull the cue back away from
+          -- where you want the ball to go, like a real cue.
+          --
+          -- Only the HORIZONTAL component negates. Screen y and the table's
+          -- z run the same way through this projection, but the aim angle is
+          -- consumed as (cos, sin) -> (x, z) where a positive sin renders
+          -- DOWNWARD -- so negating dy as well mirrored the vertical axis
+          -- and the ball went up when you pulled down. Verified by driving
+          -- a known drag and reading the resulting direction back.
+          aimAngle = math.atan(dy, -dx)
           pull = math.min(PULL_MAX, d / math.max(pxPerTablePx, 0.0001))
           dragging = true
         end

@@ -10,6 +10,19 @@ local M = {}
 
 M.U = 100                     -- pixels per dream unit
 
+-- PIXELS PER METRE for the physics solver.
+--
+-- This is the single most important number in the file and it was wrong by
+-- 10x. At Box3D's default 64 px/m these 19px balls were 30 CENTIMETRE
+-- spheres on a 24-metre table -- beach balls in a car park. Box3D is tuned
+-- for objects roughly 0.1-10 m, and everything downstream (impulse, mass,
+-- gravity, restitution, sleep thresholds) inherits that error, which is why
+-- no amount of tuning the shot impulse ever made the break feel right.
+--
+-- 598 px/m makes the playing surface a real 9-foot table (2.54 m x 1.27 m)
+-- and a ball a real 3.2 cm.
+M.PPM = 598
+
 -- A 2:1 table, the real proportion of a pool table (9ft x 4.5ft).
 M.W, M.H = 760, 380           -- HALF extents of the playing surface, px
 M.BALL_R = 19
@@ -40,6 +53,8 @@ M.MAT = {
   -- the cloth without ever spinning up, which is what made 3D physics look
   -- like 2D physics.
   ball    = { friction = 0.22, restitution = 0.94, rolling = 0.010 },
+  -- density chosen so a ball weighs the regulation 170 g at M.PPM
+  ballDensity = 1268,
 }
 
 function M.build(world)
