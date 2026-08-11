@@ -12,8 +12,8 @@ M.U = 100                     -- pixels per dream unit
 
 -- A 2:1 table, the real proportion of a pool table (9ft x 4.5ft).
 M.W, M.H = 760, 380           -- HALF extents of the playing surface, px
-M.BALL_R = 15
-M.POCKET_R = 34               -- generous: this is a game for a 85-year-old,
+M.BALL_R = 19
+M.POCKET_R = 44               -- generous: this is a game for a 85-year-old,
                               -- and a pocket that rejects a good shot is a
                               -- bug as far as the player is concerned
 M.RAIL = 26                   -- cushion thickness

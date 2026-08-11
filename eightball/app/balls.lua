@@ -1,45 +1,36 @@
--- balls.lua - the fifteen object balls plus the cue ball.
+-- balls.lua - the fifteen object balls plus the cue ball, and the table's
+-- surface textures.
 --
--- Ball faces are GENERATED, not downloaded. A pool ball is a solid colour, a
--- white band, and a numeral -- all of which draw crisper at any resolution
--- than a stock photo, and none of which carry a licence question. The number
--- disc is drawn with the same Atkinson Hyperlegible the rest of the family
--- uses, so the digits are legible from the couch at ball size.
+-- Everything here is GENERATED. A pool ball is a solid colour, a white band
+-- and a numeral; felt is a weave; a rail is grain. All of them draw crisper
+-- at any resolution than a stock photo and none carry a licence question.
+--
+-- The balls also carry BAKED SPHERICAL SHADING with a specular highlight.
+-- That is what makes them read as balls rather than as flat discs: these
+-- spheres are small on screen under one overhead lamp, and a highlight
+-- painted in the right place sells the roundness better than a real light
+-- that has to survive the whole material pipeline. It is a function of the
+-- UV, so it costs nothing at runtime.
 
 local M = {}
 
 -- The standard set. 1-7 solid, 8 black, 9-15 striped, same colour per rank.
 M.COLORS = {
-  [1]  = {0.96, 0.78, 0.13},   -- yellow
-  [2]  = {0.13, 0.29, 0.76},   -- blue
-  [3]  = {0.85, 0.16, 0.16},   -- red
-  [4]  = {0.42, 0.16, 0.58},   -- purple
-  [5]  = {0.94, 0.47, 0.10},   -- orange
-  [6]  = {0.10, 0.48, 0.24},   -- green
-  [7]  = {0.55, 0.16, 0.16},   -- maroon
-  [8]  = {0.07, 0.07, 0.08},   -- black
+  [1]  = {0.98, 0.80, 0.09},   -- yellow
+  [2]  = {0.09, 0.24, 0.78},   -- blue
+  [3]  = {0.88, 0.11, 0.11},   -- red
+  [4]  = {0.38, 0.11, 0.56},   -- purple
+  [5]  = {0.96, 0.45, 0.06},   -- orange
+  [6]  = {0.05, 0.45, 0.20},   -- green
+  [7]  = {0.50, 0.11, 0.13},   -- maroon
+  [8]  = {0.06, 0.06, 0.07},   -- black
 }
 for n = 9, 15 do M.COLORS[n] = M.COLORS[n - 8] end
 
 function M.isStripe(n) return n >= 9 and n <= 15 end
 
--- One 256x256 ball face per number, drawn once at load into a canvas.
---
--- The texture is used as EMISSION (see main.lua): the textured mesh format's
--- albedo sampler is not wired up in this engine, so emission is what actually
--- reaches the screen. That also gives the flat, even, glare-free look a
--- top-down aiming game wants.
--- Faces are painted pixel by pixel into ImageData, NOT drawn into a Canvas.
---
--- A Canvas here is the wrong tool twice over: 3Dream's getImage only passes a
--- value through to the sampler when type() reports "userdata", which a Canvas
--- built in this engine does not, and Canvas:newImageData() is not implemented
--- so there is no way to convert one. ImageData -> newImage is the path that
--- actually reaches the GPU.
---
--- Digits are drawn from a tiny 3x5 bitmap font rather than a TTF, because
--- rasterising text needs a canvas. At 256px per face each pixel is ~14px
--- wide, which is crisper than a scaled glyph anyway.
+-- A 3x5 bitmap font. Rasterising a TTF needs a canvas, and at ball size a
+-- crisp block numeral out-reads a scaled glyph anyway.
 local DIGITS = {
   ["0"] = { "111", "101", "101", "101", "111" },
   ["1"] = { "010", "110", "010", "010", "111" },
@@ -53,21 +44,43 @@ local DIGITS = {
   ["9"] = { "111", "101", "111", "001", "111" },
 }
 
+-- Baked shading for a point on the sphere, from its UV.
+--
+-- The lamp is above and slightly toward the viewer, so the top of a ball is
+-- lit, the bottom falls away, and a tight specular sits above centre. The
+-- ambient floor is deliberately high: this is a game for someone who has to
+-- tell a 3 from a 6 across a room, and a physically honest shadow side
+-- would make half of every ball unreadable.
+local function shade(u, v)
+  local phi = v * math.pi
+  local th  = u * math.pi * 2
+  local nx = math.sin(phi) * math.cos(th)
+  local ny = math.cos(phi)
+  local nz = math.sin(phi) * math.sin(th)
+  local lx, ly, lz = -0.35, 0.90, 0.26
+  local ndl = nx * lx + ny * ly + nz * lz
+  if ndl < 0 then ndl = 0 end
+  local diff = 0.56 + 0.44 * ndl
+  local spec = ndl ^ 46 * 0.85
+  return diff, spec
+end
+
 function M.makeFaces()
   local faces = {}
-  local S = 128
+  local S = 192
   for n = 0, 15 do
     local d = love.image.newImageData(S, S)
     local c = M.COLORS[n] or { 1, 1, 1 }
-    local white = { 0.95, 0.94, 0.90 }
+    local white = { 0.96, 0.95, 0.91 }
 
+    -- The sphere is unwrapped with u around the equator and v pole to pole,
+    -- so a horizontal band in UV space wraps the ball as a ring, which is
+    -- exactly what a stripe is.
     local function base(x, y)
       if n == 0 then return white end
       if M.isStripe(n) then
-        -- a coloured band across the middle of UV space wraps the sphere as
-        -- a ring, which is exactly what a striped ball looks like
         local v = y / S
-        if v > 0.30 and v < 0.70 then return c end
+        if v > 0.295 and v < 0.705 then return c end
         return white
       end
       return c
@@ -76,28 +89,35 @@ function M.makeFaces()
     for y = 0, S - 1 do
       for x = 0, S - 1 do
         local col = base(x, y)
-        d:setPixel(x, y, col[1], col[2], col[3], 1)
+        local diff, spec = shade((x + 0.5) / S, (y + 0.5) / S)
+        d:setPixel(x, y,
+          math.min(1, col[1] * diff + spec),
+          math.min(1, col[2] * diff + spec),
+          math.min(1, col[3] * diff + spec), 1)
       end
     end
 
-    -- two number discs, on opposite sides of the ball
+    -- two number discs, on opposite sides, shaded to match
     if n > 0 then
       for _, cx in ipairs({ S * 0.25, S * 0.75 }) do
-        local cy, rad = S * 0.5, S * 0.19
+        local cy, rad = S * 0.5, S * 0.20
         for y = math.floor(cy - rad), math.ceil(cy + rad) do
           for x = math.floor(cx - rad), math.ceil(cx + rad) do
             if x >= 0 and x < S and y >= 0 and y < S then
               local dx, dy = x - cx, y - cy
               if dx * dx + dy * dy <= rad * rad then
-                d:setPixel(x, y, 0.97, 0.96, 0.93, 1)
+                local diff, spec = shade((x + 0.5) / S, (y + 0.5) / S)
+                d:setPixel(x, y,
+                  math.min(1, 0.97 * diff + spec),
+                  math.min(1, 0.96 * diff + spec),
+                  math.min(1, 0.93 * diff + spec), 1)
               end
             end
           end
         end
-        -- the numeral, centred in the disc
         local s = tostring(n)
         local gw, gh = 3, 5
-        local px = math.floor(rad / 3.4)          -- pixel size of one cell
+        local px = math.max(2, math.floor(rad / 3.6))
         local totalW = (#s * (gw + 1) - 1) * px
         local ox = cx - totalW / 2
         local oy = cy - (gh * px) / 2
@@ -112,7 +132,8 @@ function M.makeFaces()
                       local tx = math.floor(ox + ((i - 1) * (gw + 1) + gx - 1) * px + xx)
                       local ty = math.floor(oy + (gy - 1) * px + yy)
                       if tx >= 0 and tx < S and ty >= 0 and ty < S then
-                        d:setPixel(tx, ty, 0.08, 0.08, 0.08, 1)
+                        local diff = shade((tx + 0.5) / S, (ty + 0.5) / S)
+                        d:setPixel(tx, ty, 0.09 * diff, 0.09 * diff, 0.10 * diff, 1)
                       end
                     end
                   end
@@ -129,11 +150,51 @@ function M.makeFaces()
   return faces
 end
 
+-- ── surface textures ──────────────────────────────────────────────────
+
+-- Woven cloth. Real felt has a weave and takes the light unevenly, and a
+-- perfectly flat green is the single biggest reason a rendered table reads
+-- as a diagram rather than as a table.
+function M.makeFelt(baseColor)
+  local S = 256
+  local d = love.image.newImageData(S, S)
+  for y = 0, S - 1 do
+    for x = 0, S - 1 do
+      local weave = math.sin(x * 0.7) * 0.5 + math.sin(y * 0.7) * 0.5
+      local n = (love.math.noise(x * 0.14, y * 0.14) - 0.5) * 2
+      local k = 1 + weave * 0.020 + n * 0.055
+      d:setPixel(x, y,
+        math.max(0, math.min(1, baseColor[1] * k)),
+        math.max(0, math.min(1, baseColor[2] * k)),
+        math.max(0, math.min(1, baseColor[3] * k)), 1)
+    end
+  end
+  return love.graphics.newImage(d)
+end
+
+-- Stained hardwood for the rails.
+function M.makeWood()
+  local S = 256
+  local d = love.image.newImageData(S, S)
+  for y = 0, S - 1 do
+    for x = 0, S - 1 do
+      local g = love.math.noise(x * 0.045, y * 0.5)
+      local rings = math.sin((x * 0.09 + g * 2.2) * 3.0) * 0.5 + 0.5
+      local k = 0.70 + rings * 0.36 + (g - 0.5) * 0.20
+      d:setPixel(x, y,
+        math.max(0, math.min(1, 0.40 * k)),
+        math.max(0, math.min(1, 0.205 * k)),
+        math.max(0, math.min(1, 0.095 * k)), 1)
+    end
+  end
+  return love.graphics.newImage(d)
+end
+
 -- Rack the fifteen balls in the triangle, apex on the foot spot.
 --
--- Real 8-ball racking rules: the 8 sits in the CENTRE of the third row, and
--- the two back corners must be one solid and one stripe. The rest is random,
--- which is what keeps openings from feeling identical every game.
+-- Real 8-ball racking: the 8 sits in the CENTRE of the third row, and the
+-- two back corners must be one solid and one stripe. The rest is random,
+-- which keeps openings from feeling identical every game.
 function M.rackOrder(rng)
   local solids, stripes = {}, {}
   for n = 1, 7 do solids[#solids + 1] = n end
@@ -162,7 +223,6 @@ function M.rackOrder(rng)
   return slots
 end
 
--- Triangle positions, apex pointing at the cue ball (toward -x).
 -- dir = +1 for a rack growing toward +x, -1 toward -x (the apex always
 -- points at the cue ball).
 function M.rackPositions(footX, footZ, r, dir)

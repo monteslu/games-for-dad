@@ -35,7 +35,7 @@ local U = tbl.U
 -- one, and on a 2:1 table that reads as a skewed trapezoid rather than as
 -- depth -- which is actively misleading when the player is judging an angle.
 -- The balls still read as spheres because they are lit and shaded.
-local CAM_H, CAM_TILT, CAM_FOV = 11.6, 0.001, 60
+local CAM_H, CAM_TILT, CAM_FOV = 12.9, 0.001, 60
 
 -- 3Dream's camera.transform is a WORLD matrix: present() reads the eye
 -- position out of its translation column and the forward axis out of column
@@ -57,7 +57,8 @@ end
 
 -- ── state ─────────────────────────────────────────────────────────────
 local world, table3d
-local mesh_ball, mesh_cloth, mesh_rail
+local mesh_ball, mesh_cloth, mesh_rails
+local felt_tex, wood_tex
 local mat_cloth, mat_rail, mat_balls = nil, nil, {}
 local faces
 local balls = {}          -- { num, body, shape, pocketed, x, z }
@@ -262,9 +263,11 @@ local function rack()
   -- sits at +x to appear on the right and the rack grows toward -x. Getting
   -- this backwards is not an error, just a mirrored table, which is why it
   -- is worth stating rather than discovering again.
-  cue = addBall(0, tbl.W * 0.52, 0)
+  -- Real table geometry: the cue ball sits on the head spot at a quarter of
+  -- the table's length, the rack's apex on the foot spot at three quarters.
+  cue = addBall(0, tbl.W * 0.50, 0)
   local order = ballart.rackOrder(function(n) return love.math.random(n) end)
-  local pos = ballart.rackPositions(-tbl.W * 0.34, 0, tbl.BALL_R, -1)
+  local pos = ballart.rackPositions(-tbl.W * 0.50, 0, tbl.BALL_R, -1)
   for i = 1, 15 do addBall(order[i], pos[i].x, pos[i].z) end
 
   state.groups = {}
@@ -293,19 +296,31 @@ function love.load()
   sounds.loadAll()
   faces = ballart.makeFaces()
 
+  -- The room. Without this the table floats in 3Dream's default grey, which
+  -- is the single thing that made the old build read as a debug view rather
+  -- than as a game.
+  dream:setSky({ 0.055, 0.05, 0.065 })
+
+  felt_tex = ballart.makeFelt(theme.felt)
+  wood_tex = ballart.makeWood()
+
   -- Emission carries the colour: the textured mesh format's albedo sampler
   -- is not wired up in this engine, so an albedo-only material renders
-  -- black no matter how many lights are in the scene. Emission also gives
-  -- the flat, even, glare-free look a top-down aiming game wants.
+  -- black no matter how many lights are in the scene. The shading that
+  -- makes these surfaces read as surfaces is baked into the textures.
   mat_cloth = dream:newMaterial("cloth")
-  mat_cloth:setColor(theme.felt[1], theme.felt[2], theme.felt[3], 1)
-  mat_cloth:setEmission(theme.felt[1], theme.felt[2], theme.felt[3])
+  mat_cloth:setColor(1, 1, 1, 1)
+  mat_cloth:setEmissionTexture(felt_tex)
+  mat_cloth:setEmission(0, 0, 0)
+  mat_cloth:setEmissionFactor(1, 1, 1)
   mat_cloth:setRoughness(0.95)
   mat_cloth:setMetallic(0)
 
   mat_rail = dream:newMaterial("rail")
-  mat_rail:setColor(0.32, 0.17, 0.08, 1)
-  mat_rail:setEmission(0.26, 0.14, 0.07)
+  mat_rail:setColor(1, 1, 1, 1)
+  mat_rail:setEmissionTexture(wood_tex)
+  mat_rail:setEmission(0, 0, 0)
+  mat_rail:setEmissionFactor(1, 1, 1)
   mat_rail:setRoughness(0.6)
   mat_rail:setMetallic(0)
 
@@ -324,7 +339,31 @@ function love.load()
   end
 
   mesh_cloth = buildBox(mat_cloth, tbl.W / U, 0.08, tbl.H / U)
-  mesh_rail  = buildBox(mat_rail, 1, 1, 1)
+  do
+    local lm = mesh_cloth:getMesh()
+    if lm and lm.setTexture then lm:setTexture(felt_tex) end
+  end
+
+  -- The RAILS, as real geometry rather than a painted border. Four boxes
+  -- standing proud of the cloth, so the table has an edge that catches the
+  -- light and the playing surface is visibly inset. A pool table without
+  -- rails reads as a green rectangle.
+  mesh_rails = {}
+  local RH = 0.34                      -- rail height above the cloth
+  local RW = tbl.RAIL / U              -- rail thickness
+  local function rail(hx, hy, hz, x, y, z)
+    local m = buildBox(mat_rail, hx, hy, hz)
+    local lm = m:getMesh()
+    if lm and lm.setTexture then lm:setTexture(wood_tex) end
+    mesh_rails[#mesh_rails + 1] = { mesh = m, x = x, y = y, z = z }
+  end
+  local halfW, halfH = tbl.W / U, tbl.H / U
+  -- long rails run the full width INCLUDING the corners, so the frame closes
+  rail(halfW + RW * 2, RH, RW, 0, RH * 0.5, -(halfH + RW))
+  rail(halfW + RW * 2, RH, RW, 0, RH * 0.5,  (halfH + RW))
+  rail(RW, RH, halfH, -(halfW + RW), RH * 0.5, 0)
+  rail(RW, RH, halfH,  (halfW + RW), RH * 0.5, 0)
+
   mesh_ball  = buildSphere(mat_balls[0], tbl.BALL_R / U, 14)
   -- one sphere mesh per number so each carries its own face texture
   mesh_ball = {}
@@ -672,6 +711,7 @@ function love.draw()
   dream:addNewLight("point", dream.vec3(0, 8, 0), dream.vec3(1, 0.97, 0.92), 70)
 
   dream:draw(mesh_cloth, 0, 0, 0)
+  for _, r in ipairs(mesh_rails) do dream:draw(r.mesh, r.x, r.y, r.z) end
   for _, b in ipairs(balls) do
     if not b.pocketed then
       local x, y, z = b3.body_position(b.body)
@@ -687,7 +727,38 @@ function love.draw()
   love.graphics.setDepthMode()
   love.graphics.setMeshCullMode("none")
 
+  drawPockets()
   drawHUD()
+end
+
+-- The six pockets, projected onto the cloth.
+--
+-- Drawn after the 3D pass rather than as geometry because a pocket is a
+-- HOLE: it has no lit surface of its own, and a black disc sitting exactly
+-- on the cloth is both the correct look and the cheapest one. They matter
+-- more than they sound -- without them a player has no idea where to aim,
+-- which is the difference between a pool table and a green rectangle.
+function drawPockets()
+  local g = love.graphics
+  local r0 = worldToScreen(0, 0)
+  local r1 = worldToScreen(tbl.POCKET_R, 0)
+  local rad = (r0 and r1) and math.abs(r1 - r0) or 26
+  for _, p in ipairs(tbl.pockets()) do
+    local sx, sy = worldToScreen(p.x, p.z)
+    if sx then
+      -- a soft dark halo so the mouth sits INTO the cloth
+      g.setColor(0.02, 0.05, 0.03, 0.55)
+      g.circle("fill", sx, sy, rad * 1.22)
+      -- the hole
+      g.setColor(0.03, 0.03, 0.035)
+      g.circle("fill", sx, sy, rad)
+      -- a brass lip catching the overhead lamp
+      g.setColor(0.42, 0.34, 0.16, 0.85)
+      g.setLineWidth(math.max(2, rad * 0.14))
+      g.circle("line", sx, sy, rad * 1.02)
+      g.setLineWidth(1)
+    end
+  end
 end
 
 function drawHUD()
@@ -735,51 +806,92 @@ function drawHUD()
     g.setLineWidth(1)
   end
 
-  -- pocketed balls, per side
-  local function groupRow(seat, y, label)
+  -- ── the scoreboard ──────────────────────────────────────────────────
+  --
+  -- Two panels, one per player, each showing that player's GROUP and the
+  -- balls they have actually sunk. Real pool balls, drawn with the same
+  -- shading as the table's, because a flat dot beside a shaded ball reads
+  -- as a different object. The active player's panel is lit gold; the
+  -- other recedes. That is the whole "whose turn is it" signal, in the
+  -- place a player is already looking.
+  local function ballChip(num, x, y, rad)
+    local c = ballart.COLORS[num]
+    if not c then return end
+    if ballart.isStripe(num) then
+      g.setColor(0.95, 0.94, 0.90)
+      g.circle("fill", x, y, rad)
+      g.setColor(c[1], c[2], c[3])
+      g.rectangle("fill", x - rad, y - rad * 0.44, rad * 2, rad * 0.88)
+    else
+      g.setColor(c[1], c[2], c[3])
+      g.circle("fill", x, y, rad)
+    end
+    -- a highlight in the same place the 3D balls carry theirs
+    g.setColor(1, 1, 1, 0.5)
+    g.circle("fill", x - rad * 0.3, y - rad * 0.34, rad * 0.26)
+    g.setColor(0, 0, 0, 0.4)
+    g.setLineWidth(2)
+    g.circle("line", x, y, rad)
+    g.setLineWidth(1)
+  end
+
+  -- The panels live in the band ABOVE the table, side by side, where there
+  -- is real width to use. Down the left margin they collided with the rail.
+  local function panel(seat, px, label)
+    local active = (state.turn == seat and state.phase ~= "over")
+    local py, pw, ph = 22, 470, 128
+    -- the panel itself
+    g.setColor(0, 0, 0, 0.42)
+    g.rectangle("fill", px, py, pw, ph, 14, 14)
+    if active then
+      g.setColor(theme.gold[1], theme.gold[2], theme.gold[3], 0.95)
+      g.setLineWidth(4)
+      g.rectangle("line", px, py, pw, ph, 14, 14)
+      g.setLineWidth(1)
+    end
+
+    g.setFont(ui.font(theme.fontMid))
+    g.setColor(active and theme.gold or theme.quiet)
+    g.print(label, px + 18, py + 10)
+
+    local grp = state.groups[seat]
     g.setFont(ui.font(theme.fontSmall))
     g.setColor(theme.quiet)
-    g.print(label, 60, y - 34)
-    local grp = state.groups[seat]
+    if grp then
+      g.print(string.upper(grp), px + 18, py + 56)
+    elseif state.phase ~= "over" then
+      g.print("OPEN TABLE", px + 18, py + 56)
+    end
+
+    -- the balls this player has sunk, in a row across the panel
     local n = 0
     for _, b in ipairs(balls) do
       if b.pocketed and b.num ~= 0 and b.num ~= 8
          and grp and rules.groupOf(b.num) == grp then
-        local c = ballart.COLORS[b.num]
-        g.setColor(c[1], c[2], c[3])
-        g.circle("fill", 70 + n * 46, y, 17)
-        if ballart.isStripe(b.num) then
-          g.setColor(0.95, 0.95, 0.9)
-          g.rectangle("fill", 70 + n * 46 - 17, y - 5, 34, 10)
-        end
+        ballChip(b.num, px + 172 + n * 40, py + 74, 16)
         n = n + 1
       end
     end
+    -- how many are left, which is the number a player actually wants
     if grp then
+      local left = rules.remaining(balls, grp)
       g.setFont(ui.font(theme.fontSmall))
-      g.setColor(theme.quiet)
-      g.print(string.upper(grp), 60, y + 26)
+      g.setColor(left == 0 and theme.win or theme.quiet)
+      g.printf(left == 0 and "ON THE 8" or (left .. " LEFT"),
+               px, py + 12, pw - 18, "right")
     end
   end
-  groupRow(PLAYER, 120, "YOU")
-  groupRow(CPU, 260, "CPU")
+  panel(PLAYER, 40, "YOU")
+  panel(CPU, W - 510, "CPU")
 
-  -- whose turn
-  g.setFont(ui.font(theme.fontBig))
-  if state.turn == PLAYER then
-    g.setColor(theme.gold)
-    g.print("YOUR SHOT", W - 460, 60)
-  else
-    g.setColor(theme.quiet)
-    g.print("CPU SHOOTING", W - 520, 60)
-  end
-
-  -- the message line: wins loud, losses quiet (docs/DESIGN.md)
+  -- The message line, in the dark band BELOW the table rather than across
+  -- the cloth: a banner over the playing surface hides the very balls the
+  -- player is reading. Wins loud, losses quiet (docs/DESIGN.md).
   if state.message and state.message ~= "" then
     local col = theme.white
     if state.messageMood == "win" then col = theme.win
     elseif state.messageMood == "loss" then col = theme.lossRed end
-    ui.banner(state.message, H - 210, col,
+    ui.banner(state.message, H - 128, col,
               state.phase == "over" and theme.fontHuge or theme.fontBig)
   end
 
