@@ -202,6 +202,37 @@ local function worldToScreen(wx, wz)
   return (cx / cw * 0.5 + 0.5) * W, (1 - (cy / cw * 0.5 + 0.5)) * H
 end
 
+-- The inverse: a screen point back to a spot on the cloth.
+--
+-- Ball-in-hand has to be placeable with a mouse or a finger, not only by
+-- walking a cursor with the d-pad. Every ball sits at one fixed height, so
+-- the projection restricted to that plane is a 2D map from (wx,wz) to the
+-- screen -- but a PERSPECTIVE one, so it is not linear in world space and
+-- cannot simply be solved as a 2x2 system. It IS linear in homogeneous
+-- terms: sx*cw and cx are both affine in (wx,wz), so moving cw to the left
+-- side gives two genuinely linear equations. Solve those.
+local function screenToWorld(sx, sy)
+  if not projCam then return nil end
+  local m = projCam
+  local W, H = love.graphics.getWidth(), love.graphics.getHeight()
+  -- target normalised device coords
+  local ndx = (sx / W - 0.5) * 2
+  local ndy = (1 - sy / H - 0.5) * 2
+  local y = tbl.BALL_R / U
+  -- cx - ndx*cw = 0 and cy - ndy*cw = 0, each affine in (x,z)
+  local a1 = m[1] - ndx * m[13]
+  local b1 = m[3] - ndx * m[15]
+  local c1 = (m[2] - ndx * m[14]) * y + (m[4] - ndx * m[16])
+  local a2 = m[5] - ndy * m[13]
+  local b2 = m[7] - ndy * m[15]
+  local c2 = (m[6] - ndy * m[14]) * y + (m[8] - ndy * m[16])
+  local det = a1 * b2 - a2 * b1
+  if math.abs(det) < 1e-9 then return nil end
+  local x = (-c1 * b2 + c2 * b1) / det
+  local z = (-a1 * c2 + a2 * c1) / det
+  return x * U, z * U
+end
+
 -- A model matrix from a quaternion plus a translation.
 --
 -- Box3D reports orientation as a quaternion because in 3D there is no single
@@ -468,46 +499,46 @@ function love.load()
     mesh_rails[#mesh_rails + 1] = { mesh = m, x = x, y = y, z = z }
   end
   local halfW, halfH = tbl.W / U, tbl.H / U
-  -- The long rails stop short of the corners, which are filled by a
-  -- quarter-round instead of a square butt joint. A real table has a rounded
-  -- outer corner and a hard 90-degree box reads as a placeholder.
-  local CR = RW * 1.05                      -- corner radius
-  rail(halfW + RW * 2 - CR, RH, RW, 0, RH * 0.5, -(halfH + RW))
-  rail(halfW + RW * 2 - CR, RH, RW, 0, RH * 0.5,  (halfH + RW))
-  rail(RW, RH, halfH - CR + RW, -(halfW + RW), RH * 0.5, 0)
-  rail(RW, RH, halfH - CR + RW,  (halfW + RW), RH * 0.5, 0)
+  -- The rails form a closed frame, with a small quarter-round at each
+  -- outer corner.
+  --
+  -- The rails run the FULL length and the corner piece is inscribed in the
+  -- square they already leave, so the arc can never bulge past the rail
+  -- face. The previous version centred the arc on the rail end with a
+  -- radius LARGER than the rail thickness, so every corner stuck out past
+  -- its own rails and read as four detached lumps.
+  rail(halfW + RW * 2, RH, RW, 0, RH * 0.5, -(halfH + RW))
+  rail(halfW + RW * 2, RH, RW, 0, RH * 0.5,  (halfH + RW))
+  rail(RW, RH, halfH, -(halfW + RW), RH * 0.5, 0)
+  rail(RW, RH, halfH,  (halfW + RW), RH * 0.5, 0)
 
-  -- the four rounded corners, each an arc of wedges
-  local function corner(cx, cz, a0)
+  -- A quarter-round that rounds the OUTER corner only: it fills the square
+  -- the two rails leave, minus the bite the arc takes out of it.
+  local function corner(sx, sz)
     local m = dream:newMesh(mat_rail)
     local mv = m:getOrCreateBuffer("vertices")
     local mn = m:getOrCreateBuffer("normals")
     local mt = m:getOrCreateBuffer("texCoords")
     local mf = m:getOrCreateBuffer("faces")
-    -- rIn is 0 so the wedge is a solid pie slice. A non-zero inner radius
-    -- left a bite taken out of the wood at every corner.
-    local SEG, rIn, rOut = 9, 0, CR
-    local yTop, yBot = RH, 0
+    -- the outer corner of the frame, and the arc centre inset from it
+    local ox = sx * (halfW + RW * 2)
+    local oz = sz * (halfH + RW * 2)
+    local cx = ox - sx * RW
+    local cz = oz - sz * RW
+    local SEG = 8
+    local yTop = RH
+    -- a triangle fan from the arc centre out to the arc
+    local base = mv:getSize()
+    mv:append({ cx, yTop, cz }); mn:append({ 0, 1, 0 }); mt:append({ 0.5, 0.5 })
     for i = 0, SEG do
-      local a = a0 + (i / SEG) * (math.pi / 2)
-      local ca, sa = math.cos(a), math.sin(a)
-      local base = mv:getSize()
-      -- inner-top, outer-top, outer-bottom, inner-bottom
-      mv:append({ cx + ca * rIn,  yTop, cz + sa * rIn })
-      mv:append({ cx + ca * rOut, yTop, cz + sa * rOut })
-      mv:append({ cx + ca * rOut, yBot, cz + sa * rOut })
-      mv:append({ cx + ca * rIn,  yBot, cz + sa * rIn })
-      for k = 1, 4 do
-        mn:append({ 0, 1, 0 })
-        mt:append({ i / SEG, (k - 1) / 3 })
-      end
+      local a = (i / SEG) * (math.pi / 2)
+      local px = cx + sx * RW * math.cos(a)
+      local pz = cz + sz * RW * math.sin(a)
+      mv:append({ px, yTop, pz })
+      mn:append({ 0, 1, 0 })
+      mt:append({ i / SEG, 1 })
       if i > 0 then
-        local prev = base - 4
-        -- the top face, and the outer wall
-        mf:append({ prev + 1, prev + 2, base + 2 })
-        mf:append({ prev + 1, base + 2, base + 1 })
-        mf:append({ prev + 2, prev + 3, base + 3 })
-        mf:append({ prev + 2, base + 3, base + 2 })
+        mf:append({ base + 1, base + i + 1, base + i + 2 })
       end
     end
     m:create()
@@ -515,11 +546,7 @@ function love.load()
     if lm and lm.setTexture then lm:setTexture(wood_tex) end
     mesh_rails[#mesh_rails + 1] = { mesh = m, x = 0, y = 0, z = 0 }
   end
-  local ix, iz = halfW + RW * 2 - CR, halfH + RW * 2 - CR
-  corner( ix,  iz, 0)                 -- +x +z
-  corner(-ix,  iz, math.pi / 2)       -- -x +z
-  corner(-ix, -iz, math.pi)           -- -x -z
-  corner( ix, -iz, math.pi * 1.5)     -- +x -z
+  corner( 1,  1); corner(-1,  1); corner(-1, -1); corner( 1, -1)
 
   mesh_ball  = buildSphere(mat_balls[0], tbl.BALL_R / U, 14)
   -- one sphere mesh per number so each carries its own face texture
@@ -772,11 +799,14 @@ function love.update(dt)
     if heldRight() then placeX = placeX + sp end
     if not AUTO and love.pad.isDown("up")   then placeZ = placeZ - sp end
     if not AUTO and love.pad.isDown("down") then placeZ = placeZ + sp end
-    if click then
-      -- tap anywhere on the cloth to drop the ball there
-      for wx = -tbl.W, tbl.W, 10 do
-        for wz = -tbl.H, tbl.H, 10 do end
-      end
+    -- Touch/mouse: drag the ball around the cloth. The cursor follows the
+    -- finger for as long as it is down, so it can be nudged into place
+    -- rather than committed on the first tap -- and crucially it does NOT
+    -- place on release, because the release still has to be available for
+    -- the PLACE button. Confirm is a separate, deliberate act.
+    if clickHeld and not inRect(clickHeld, PLACE_BTN) then
+      local wx, wz = screenToWorld(clickHeld.x, clickHeld.y)
+      if wx then placeX, placeZ = wx, wz end
     end
     placeX = math.max(-tbl.W + tbl.BALL_R, math.min(tbl.W - tbl.BALL_R, placeX))
     placeZ = math.max(-tbl.H + tbl.BALL_R, math.min(tbl.H - tbl.BALL_R, placeZ))
@@ -1017,17 +1047,18 @@ function drawChips()
     local ux = (c.x - W / 2) / pxPerUnit
     local uy = -(c.y - H / 2) / pxPerUnit
     local scale = (c.rad / pxPerUnit) / (tbl.BALL_R / U)
-    -- Rotated a quarter turn about X so the ball's POLE -- where its number
-    -- lives -- faces THIS camera.
+    -- NO rotation: the identity pose already points u=0.25 -- the first
+    -- number circle, which sits on the EQUATOR -- straight down -Z at this
+    -- camera.
     --
-    -- The table camera looks down -Y, so an unrotated ball shows its pole
-    -- (and its number) to it. This camera looks down -Z, so the same
-    -- unrotated ball is seen edge-on: bare colour, no number, which is
-    -- exactly how the tray first rendered.
+    -- This used to carry a quarter turn about X, from when the number lived
+    -- at the ball's pole. Moving the number to the equator (see balls.lua)
+    -- made that rotation exactly wrong, and the tray went back to showing
+    -- bare colour.
     dream:draw(mesh_ball[c.num], dream.mat4({
       scale, 0,     0,     ux,
-      0,     0,     scale, uy,
-      0,     -scale, 0,    0,
+      0,     scale, 0,     uy,
+      0,     0,     scale, 0,
       0,     0,     0,     1,
     }))
   end
@@ -1242,7 +1273,10 @@ function drawHUD()
   -- is real width to use. Down the left margin they collided with the rail.
   local function panel(seat, px, label)
     local active = (state.turn == seat and state.phase ~= "over")
-    local py, pw, ph = 22, 470, 128
+    -- Three clean rows, no overlaps. Was 128 tall with the chips sitting on
+    -- top of the group label -- the chip row spanned py+58..py+90 while
+    -- "SOLIDS" ran py+56..py+86.
+    local py, pw, ph = 20, 470, 150
     -- the panel itself
     -- opaque, for the same reason the pockets are: alpha after the 3D pass
     -- is not dependable across backends, and a panel that reads as solid on
@@ -1256,17 +1290,19 @@ function drawHUD()
       g.setLineWidth(1)
     end
 
+    -- ROW 1: who, and how many they have left
     g.setFont(ui.font(theme.fontMid))
     g.setColor(active and theme.gold or theme.quiet)
-    g.print(label, px + 18, py + 10)
+    g.print(label, px + 18, py + 8)
 
     local grp = state.groups[seat]
     g.setFont(ui.font(theme.fontSmall))
     g.setColor(theme.quiet)
+    -- ROW 2: which group
     if grp then
-      g.print(string.upper(grp), px + 18, py + 56)
+      g.print(string.upper(grp), px + 18, py + 54)
     elseif state.phase ~= "over" then
-      g.print("OPEN TABLE", px + 18, py + 56)
+      g.print("OPEN TABLE", px + 18, py + 54)
     end
 
     -- the balls this player has sunk, in a row across the panel
@@ -1274,7 +1310,8 @@ function drawHUD()
     for _, b in ipairs(balls) do
       if b.pocketed and b.num ~= 0 and b.num ~= 8
          and grp and rules.groupOf(b.num) == grp then
-        ballChip(b.num, px + 172 + n * 40, py + 74, 16)
+        -- ROW 3: the balls sunk, clear of both text rows
+        ballChip(b.num, px + 34 + n * 44, py + 116, 18)
         n = n + 1
       end
     end
@@ -1284,7 +1321,7 @@ function drawHUD()
       g.setFont(ui.font(theme.fontSmall))
       g.setColor(left == 0 and theme.win or theme.quiet)
       g.printf(left == 0 and "ON THE 8" or (left .. " LEFT"),
-               px, py + 12, pw - 18, "right")
+               px, py + 14, pw - 18, "right")
     end
   end
   panel(PLAYER, 40, "YOU")
