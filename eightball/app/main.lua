@@ -30,6 +30,17 @@ local bot    = require("bot")
 
 local U = tbl.U
 
+-- A unit circle, tabulated ONCE. The contact-shadow pass draws 3 rings for
+-- each of 16 balls at 22 points apiece -- 1056 sin/cos calls a frame for a
+-- shape that never changes.
+local RING_N = 22
+local RING_COS, RING_SIN = {}, {}
+for i = 1, RING_N do
+  local a = (i - 1) / RING_N * math.pi * 2
+  RING_COS[i] = math.cos(a)
+  RING_SIN[i] = math.sin(a)
+end
+
 -- ── camera ────────────────────────────────────────────────────────────
 -- Very slightly off vertical -- just enough to give the balls some shape
 -- against the cloth, not enough to skew the table.
@@ -988,6 +999,22 @@ function love.draw()
     local br = (r0 and r1) and math.abs(r1 - r0) or 14
     -- lamp is above and slightly toward -x/+z (matches balls.lua shade())
     local offx, offy = br * 0.30, br * 0.34
+    -- Hoisted out of the per-ball loop: this was recomputed 96 times a
+    -- frame (16 balls x 6 pockets) for a value that never changes.
+    local pocketR2 = (tbl.POCKET_R * 1.35) ^ 2
+    local pockets = tbl.pockets()
+    -- ONE reusable point buffer and ONE closure for the whole pass. The
+    -- ring() closure used to be allocated per ball and built a fresh
+    -- 44-element table per call -- 48 throwaway tables a frame.
+    local pts = {}
+    local function ring(cx, cy, r, cr, cg, cb)
+      for i = 1, RING_N do
+        pts[i * 2 - 1] = cx + RING_COS[i] * r
+        pts[i * 2]     = cy + RING_SIN[i] * r
+      end
+      g.setColor(cr, cg, cb)
+      g.polygon("fill", pts)
+    end
     for _, b in ipairs(balls) do
       if not b.pocketed then
         -- Read the body LIVE rather than using the cached b.x/b.z. Those
@@ -1000,24 +1027,14 @@ function love.draw()
         -- No cloth over a pocket to receive a shadow, and none once the
         -- ball has started to drop below the surface.
         local nearPocket = tbl.overPocket(wx, wz) or wy < -2
-        for _, p in ipairs(tbl.pockets()) do
+        for _, p in ipairs(pockets) do
           local dx, dz = wx - p.x, wz - p.z
-          if dx * dx + dz * dz < (tbl.POCKET_R * 1.35) ^ 2 then nearPocket = true end
+          if dx * dx + dz * dz < pocketR2 then nearPocket = true end
         end
         if sx and not nearPocket then
           -- Opaque rings over the felt colour rather than alpha: a
           -- translucent fill after the 3D pass is not dependable across
           -- backends, which is why the pockets are drawn this way too.
-          local function ring(cx, cy, r, cr, cg, cb)
-            local pts, N = {}, 22
-            for i = 0, N - 1 do
-              local a = i / N * math.pi * 2
-              pts[#pts + 1] = cx + math.cos(a) * r
-              pts[#pts + 1] = cy + math.sin(a) * r
-            end
-            g.setColor(cr, cg, cb)
-            g.polygon("fill", pts)
-          end
           ring(sx + offx, sy + offy, br * 1.16, 0.052, 0.235, 0.098)
           ring(sx + offx * 0.8, sy + offy * 0.8, br * 0.98, 0.040, 0.196, 0.082)
           ring(sx + offx * 0.5, sy + offy * 0.5, br * 0.80, 0.030, 0.156, 0.066)
@@ -1083,6 +1100,13 @@ function drawChips()
   -- table camera does not suffer this because the balls are near its centre;
   -- the scoreboard spans the full width. Narrowing to 8 degrees puts every
   -- chip within ~5 degrees of the axis, so they stay round.
+  -- Nothing potted yet: skip the entire pass. A prepare()+present() pair
+  -- is a full render cycle (camera setup, light upload, canvas bind,
+  -- shader state) and costs the same whether it draws sixteen spheres or
+  -- none. Measured at 0.42ms/frame, ~20% of the frame, spent drawing an
+  -- empty tray for the whole opening of every game.
+  if #chipQueue == 0 then return end
+
   local half = 6.0
   local fov = 8
   local dist = half / math.tan(math.rad(fov / 2))

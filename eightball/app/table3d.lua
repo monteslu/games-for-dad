@@ -32,11 +32,17 @@ M.POCKET_R = 44               -- generous: this is a game for a 85-year-old,
 M.RAIL = 26                   -- cushion thickness
 
 -- Pocket centres: four corners and two side pockets, as on a real table.
+-- Built ONCE. These are constants, but this used to allocate a fresh outer
+-- table plus six inner ones on every call -- and the contact-shadow pass
+-- calls it once per ball, so a frame threw away ~112 tables just to read
+-- six fixed positions. Cheap per call, not cheap sixteen times a frame at
+-- 60Hz, and all of it garbage for the collector to walk.
+local POCKETS = {
+  { x = -M.W, z = -M.H }, { x = 0, z = -M.H - 4 }, { x = M.W, z = -M.H },
+  { x = -M.W, z =  M.H }, { x = 0, z =  M.H + 4 }, { x = M.W, z =  M.H },
+}
 function M.pockets()
-  return {
-    { x = -M.W, z = -M.H }, { x = 0, z = -M.H - 4 }, { x = M.W, z = -M.H },
-    { x = -M.W, z =  M.H }, { x = 0, z =  M.H + 4 }, { x = M.W, z =  M.H },
-  }
+  return POCKETS
 end
 
 -- Measured billiard constants (Dr Dave / Mathavan et al):
