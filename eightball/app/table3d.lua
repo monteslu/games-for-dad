@@ -49,6 +49,10 @@ function M.build(world)
 
   -- Cushions. Split at the side pockets so a ball can actually fall in
   -- rather than rolling along an unbroken wall past the opening.
+  --
+  -- The gap is only as wide as the pocket itself: any wider and a ball
+  -- rolls straight through it and off the table, which looks like the
+  -- table leaking rather than like a pot.
   local seg = (M.W - M.POCKET_R) / 2
   local function cushion(x, z, hx, hz)
     local b = b3.body_new(world, x, 22, z, 0)

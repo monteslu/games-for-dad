@@ -394,7 +394,11 @@ local function observe()
     if not b.pocketed then
       local x, y, z = b3.body_position(b.body)
       b.x, b.z = x, z
-      if y < -60 or (tbl.overPocket(x, z) and y < tbl.BALL_R * 0.6) then
+      -- Pocketed the moment the ball reaches a pocket MOUTH, not once it
+      -- has fallen below the cloth. Waiting for the drop let a ball roll
+      -- straight through the side-pocket gap and out onto the floor, which
+      -- reads as the table leaking rather than as a pot.
+      if y < -60 or tbl.overPocket(x, z) then
         b.pocketed = true
         b3.body_set_velocity(b.body, 0, 0, 0)
         b3.body_set_transform(b.body, 0, -9000, 0, 0, 1, 0, 0)

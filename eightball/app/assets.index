@@ -134,6 +134,8 @@
 3DreamEngine/shaders/sky/sky_hdri.glsl
 3DreamEngine/thread.lua
 assets.index
+balls.lua
+bot.lua
 conf.lua
 fonts/AtkinsonBold.ttf
 lib/anim.lua
@@ -143,6 +145,7 @@ lib/sounds.lua
 lib/theme.lua
 lib/ui.lua
 main.lua
+manifest.json
 rules.lua
 sounds/card-place-1.ogg
 sounds/card-place-2.ogg
@@ -153,3 +156,4 @@ sounds/card-slide-3.ogg
 sounds/chips-collide-1.ogg
 sounds/chips-handle-1.ogg
 sounds/chips-stack-1.ogg
+table3d.lua
