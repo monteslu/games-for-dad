@@ -1,3 +1,4 @@
 # packed output and the engine copy are build artifacts
 *.wasc
 main.wasm
+.perflog/
