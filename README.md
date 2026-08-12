@@ -64,6 +64,24 @@ shot from the bottom), 3D rendering and physics are original.
 
 <img src="docs/shots/combo.png" alt="Combo" width="480">
 
+### Jewels &mdash; `jewels/`
+
+Match three. Swap two neighbouring jewels to line up three of a kind; they
+burst, the ones above fall in, and if that lines up three more it keeps
+going on its own.
+
+**There is no clock, and that is the whole point.** The board does not move
+unless he moves it, so he can study it for two minutes, get up for coffee
+and come back to the same position. An illegal swap springs back and costs
+nothing, the hint is free and unlimited, and a board with no moves left
+quietly reshuffles itself rather than ending the game.
+
+Ten by eight at 120px cells, and each of the six jewels is a **different
+shape** as well as a different colour, so the board still reads if colour
+does not.
+
+<img src="docs/shots/jewels.png" alt="Jewels" width="480">
+
 ## Playing
 
 ```
@@ -95,6 +113,13 @@ Controls, in every game:
 - **South or east face button** confirms. Both always work; there is no
   wrong confirm button.
 - That is the entire pad scheme.
+
+**Jewels adds one idea to it**, because a grid is not a list: confirm picks
+a jewel *up*, and then a DIRECTION swaps it that way. One press, one push,
+done -- rather than a pick-then-move-then-confirm-again dance that is easy
+to get lost in halfway through. Pressing confirm again on the same jewel
+puts it back down. Its hint also has its own button (X or Y), so help is
+always one press away no matter where the cursor is.
 
 **Touch is an equal path, not an afterthought.** On a phone or tablet the
 pad does not exist, so every game takes taps for everything: tap a card to
