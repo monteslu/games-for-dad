@@ -571,8 +571,13 @@ function love.load()
   -- light and the playing surface is visibly inset. A pool table without
   -- rails reads as a green rectangle.
   mesh_rails = {}
-  local RH = 0.34                      -- rail height above the cloth
-  local RW = tbl.RAIL / U              -- rail thickness
+  -- Drawn from RAIL_VISUAL, not RAIL: the physics wall is deliberately fat
+  -- (so a hard shot cannot tunnel it) and would make an absurd border if we
+  -- drew it. This is not a real pool table -- no pockets, nobody leaning on
+  -- a cushion -- so the border is a thin trim line and the play field gets
+  -- the space instead.
+  local RH = 0.20                      -- rail height above the cloth
+  local RW = tbl.RAIL_VISUAL / U       -- rail thickness, VISUAL only
   local function rail(hx, hy, hz, x, y, z)
     local m = buildBox(mat_rail, hx, hy, hz)
     local lm = m:getMesh()

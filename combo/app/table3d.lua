@@ -40,11 +40,20 @@ M.BALL_R = 52
 
 -- NO POCKETS. Nothing to sink, so the walls are the only geometry and the
 -- bank shot is the whole toolkit.
--- Cushion HALF-thickness. Must be comfortably larger than a ball's radius:
--- a wall thinner than the ball it is stopping can be tunnelled in a single
--- solver step by a hard shot, and the ball simply leaves the field. At
--- BALL_R=52 the old 30 was doing exactly that.
+-- TWO different thicknesses, because they answer two different questions.
+--
+-- RAIL is the PHYSICS half-thickness of the cushion boxes. It has to be
+-- comfortably larger than a ball's radius or a hard shot tunnels through a
+-- wall in one solver step and the ball leaves the field. Nothing about this
+-- number is visual.
 M.RAIL = 70
+
+-- RAIL_VISUAL is how wide the wooden border is DRAWN. This is not a real
+-- pool table -- there are no pockets and no player leaning on a cushion, so
+-- a chunky rail is just screen real estate spent on furniture. Drawn thin,
+-- as a trim line around the field, while the physics wall stays fat behind
+-- it where nobody can see it.
+M.RAIL_VISUAL = 18
 
 -- Built ONCE. These are constants, but this used to allocate a fresh outer
 -- table plus six inner ones on every call -- and the contact-shadow pass
