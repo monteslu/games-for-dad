@@ -1,0 +1,9 @@
+{
+  "name": "Combo",
+  "version": "1.0.0",
+  "abi": 3,
+  "entry": "../main.wasm",
+  "assets": "./",
+  "width": 1920,
+  "height": 1080
+}
