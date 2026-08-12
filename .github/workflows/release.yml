@@ -1,0 +1,180 @@
+name: release
+
+# Build every game's .wasc cart and Android APK on a tag, and attach them to
+# the GitHub release.
+#
+# The two halves cost VERY different amounts, which is why they are separate
+# jobs rather than one:
+#
+#   carts  — pure PACKAGING. A .wasc is a zip of a prebuilt engine.wasm plus
+#            the game's Lua source. Nothing compiles. Measured at 0.13s per
+#            cart locally, so all six finish in about a second.
+#
+#   apks   — a real Android build. Gradle + the NDK compile the engine into
+#            libmain.so per ABI. That part is expensive ONCE and then cached:
+#            a warm rebuild that only swaps the cart asset measured 1.3s. So
+#            the gradle/NDK cache is what makes this job reasonable, and the
+#            first run after a cache miss will be slow.
+#
+# Carts are attached even if the APK job fails, because a .wasc runs anywhere
+# the wasmcart player runs and is the more portable artifact of the two.
+
+on:
+  push:
+    tags: ['v*']
+  # Manual runs are useful for checking the pipeline without cutting a tag.
+  # They upload artifacts but do not touch releases.
+  workflow_dispatch:
+
+permissions:
+  contents: write        # needed to attach files to the release
+
+jobs:
+  carts:
+    name: pack .wasc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The packer comes from npm rather than a checkout, so CI never needs
+      # the wasmcart source tree. build.sh resolves it via require.resolve.
+      - name: install the packer
+        run: npm i --no-save wasmcart
+
+      # The ENGINE is a COMMITTED binary in the wasmcart-lua repo
+      # (build/engine.wasm), not an npm package and not something CI builds.
+      # A checkout is the whole story: no emcc, no compilation.
+      - name: check out wasmcart-lua (carries the prebuilt engine)
+        uses: actions/checkout@v4
+        with:
+          repository: wasmcart/wasmcart-lua
+          path: wasmcart-lua
+
+      - name: point the build scripts at it
+        run: echo "WASMCART_LUA=$PWD/wasmcart-lua" >> "$GITHUB_ENV"
+
+      - name: pack every cart
+        run: |
+          set -e
+          # Games with a build.sh are packed from source. The rest already
+          # ship a committed .wasc (the card games), which is copied as-is.
+          mkdir -p dist
+          for d in */; do
+            g="${d%/}"
+            [ -f "$g/build.sh" ] && { echo "packing $g"; (cd "$g" && ./build.sh); }
+            for c in "$g"/*.wasc; do [ -f "$c" ] && cp "$c" dist/; done
+          done
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: carts
+          path: dist/*.wasc
+
+      - name: attach carts to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.wasc
+
+  apks:
+    name: build APKs
+    runs-on: ubuntu-latest
+    # Deliberately NOT `needs: carts`. The two are independent, and a cart
+    # failure should not hide an APK failure (or vice versa).
+    steps:
+      - uses: actions/checkout@v4
+
+      # wasmcart-android-lua is a separate repo holding the Android host and
+      # the build script. It carries the engine as a submodule.
+      - name: check out the android host
+        uses: actions/checkout@v4
+        with:
+          repository: wasmcart/wasmcart-android-lua
+          path: android-host
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      # THE CACHE IS THE WHOLE POINT. Compiling libmain.so per ABI is the
+      # only expensive step; everything after it is Gradle swapping one asset
+      # and re-zipping. Key on the engine submodule's SHA so the cache is
+      # reused across game changes but correctly invalidated when the engine
+      # itself moves.
+      - name: cache gradle + NDK output
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            android-host/app/.cxx
+          key: ndk-${{ runner.os }}-${{ hashFiles('android-host/deps/wasmcart-lua/**/*.c', 'android-host/deps/wasmcart-lua/**/*.h') }}
+          restore-keys: ndk-${{ runner.os }}-
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: install the packer
+        run: npm i --no-save wasmcart
+
+      # Same committed engine as the carts job. The android-host checkout
+      # already brings wasmcart-lua in as a submodule, so point at that copy
+      # rather than cloning it twice.
+      - name: point the build scripts at the engine
+        run: echo "WASMCART_LUA=$PWD/android-host/deps/wasmcart-lua" >> "$GITHUB_ENV"
+
+      # ONE native compile for ALL the games.
+      #
+      # libmain.so is built from the ENGINE's C source and contains nothing
+      # game-specific -- the game is an asset (cart.wasc) that Gradle drops
+      # in beside it. So compiling it per game would be the same work six
+      # times over. The first build below pays for the NDK compile; every
+      # build after it reuses .cxx and only re-zips with a different asset,
+      # which measured 1.3s locally.
+      #
+      # This is also why the cache above keys on the ENGINE sources and not
+      # on the games: a game-only change should hit the cache and skip the
+      # compile entirely.
+      - name: build an APK per game
+        run: |
+          set -e
+          mkdir -p dist
+          first=1
+          for d in */; do
+            g="${d%/}"
+            [ -f "$g/build.sh" ] && (cd "$g" && ./build.sh)
+            for c in "$g"/*.wasc; do
+              [ -f "$c" ] || continue
+              if [ "$first" = 1 ]; then
+                echo "=== $g (this one pays for the native compile) ==="
+                first=0
+              else
+                echo "=== $g (reusing libmain.so) ==="
+              fi
+              # arm64-v8a is the default (every phone since ~2017). No WC_ABI
+              # override: x86_64 is only for the emulator and is not shipped.
+              (cd android-host && WC_PHYSICS=ON ./build-game-apk.sh "$GITHUB_WORKSPACE/$c")
+            done
+          done
+          cp android-host/out/*.apk dist/ || true
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apks
+          path: dist/*.apk
+
+      - name: attach APKs to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
