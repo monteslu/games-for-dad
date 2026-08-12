@@ -136,6 +136,7 @@
 assets.index
 balls.lua
 conf.lua
+field.lua
 fonts/AtkinsonBold.ttf
 lib/anim.lua
 lib/cards.lua
@@ -155,4 +156,3 @@ sounds/card-slide-3.ogg
 sounds/chips-collide-1.ogg
 sounds/chips-handle-1.ogg
 sounds/chips-stack-1.ogg
-table3d.lua

@@ -24,7 +24,7 @@ local theme  = require("lib.theme")
 local ui     = require("lib.ui")
 local sounds = require("lib.sounds")
 local merge  = require("merge")
-local tbl    = require("table3d")
+local tbl    = require("field")
 local ballart= require("balls")
 
 local U = tbl.U
@@ -84,7 +84,7 @@ local CAM_H, CAM_TILT, CAM_FOV = 8.6, 0.6, 60
 -- push it left. Stating the measured direction because the projection's
 -- handedness makes the derivation easy to get backwards -- it already
 -- caught me once on the aim angle.
-local CAM_SHIFT = -1.95
+local CAM_SHIFT = -1.60
 
 -- 3Dream's camera.transform is a WORLD matrix: present() reads the eye
 -- position out of its translation column and the forward axis out of column
@@ -296,6 +296,26 @@ end
 -- share storage.
 local quatMatPool = {}
 local chipMatPool = {}
+-- Derive a rolling orientation from how far a ball has travelled.
+--
+-- Axis is perpendicular to the direction of motion (in the ground plane),
+-- angle is distance/radius. Accumulated per ball so the roll is continuous
+-- rather than recomputed from scratch each frame.
+local function rollQuat(b)
+  local x, z = b2.body_position(b.body)
+  local dx, dz = x - (b.px or x), z - (b.pz or z)
+  b.px, b.pz = x, z
+  local d = math.sqrt(dx * dx + dz * dz)
+  if d > 0.01 then
+    -- perpendicular in the plane: (dz, -dx), normalised
+    b.axx, b.axz = dz / d, -dx / d
+    b.spin = b.spin + d / tbl.BALL_R
+  end
+  local half = b.spin * 0.5
+  local sn = math.sin(half)
+  return b.axx * sn, 0, b.axz * sn, math.cos(half)
+end
+
 local function quatMat(slot, qx, qy, qz, qw, tx, ty, tz)
   local x2, y2, z2 = qx + qx, qy + qy, qz + qz
   local xx, xy, xz = qx * x2, qx * y2, qx * z2
@@ -404,54 +424,29 @@ end
 
 -- ── setup ─────────────────────────────────────────────────────────────
 local function addBall(tier, x, z, isCue)
-  local b = b3.body_new(world, x, tbl.BALL_R + 10, z)
-  local s = b3.shape_sphere(b, tbl.BALL_R, tbl.MAT.ballDensity)
-  local M = tbl.MAT.ball
-  b3.shape_set_material(s, M.friction, M.restitution, M.rolling)
-  -- Damping is what STOPS a ball, and it has to be split the right way or
-  -- the balls slide like hockey pucks instead of rolling like billiards.
-  --
-  -- Linear damping bleeds travel; ANGULAR damping bleeds spin. Setting
-  -- angular high (it was 0.9) meant every ball was braked out of rotating
-  -- the instant the cloth's friction tried to spin it up, so the physics
-  -- was genuinely 3D and the balls genuinely never rolled. Spin now decays
-  -- only through rolling resistance, which is the real mechanism.
-  b3.body_set_linear_damping(b, 0.28)
-  b3.body_set_angular_damping(b, 0.06)
-  -- Bullet (continuous collision) ONLY on the cueBall ball.
-  --
-  -- It is there so a hard break cannot tunnel through a cushion, and the cueBall
-  -- ball is the only one that ever travels fast enough to need it. Turning
-  -- it on for all sixteen made the solver treat the touching rack as one
-  -- welded mass -- a measured 1 of 15 object balls moved on a full-power
-  -- break. Racked balls are in resting contact; they want the ordinary
-  -- discrete solver, which propagates an impulse down the chain.
-  -- Bullet only on the ball being launched: it is the only one that ever
-  -- travels fast enough to tunnel a wall.
-  b3.body_set_bullet(b, isCue == true)
-  b3.shape_enable_hit_events(s, true)
-  b3.body_set_sleep_threshold(b, 0.02 * tbl.PPM)   -- ~2 cm/s
-  -- A random resting orientation.
-  --
-  -- A fresh body has identity rotation, which points its pole straight at
-  -- an overhead camera -- so every ball in a new rack sat there showing its
-  -- number face-on like a display case. Real racked balls show whatever
-  -- face they happen to be sitting on. The scoreboard chips are the ONLY
-  -- place a number should face the player, and those are drawn separately
-  -- with no rotation at all.
-  if not isCue then
-    local ax = love.math.random() * 2 - 1
-    local ay = love.math.random() * 2 - 1
-    local az = love.math.random() * 2 - 1
-    local al = math.sqrt(ax * ax + ay * ay + az * az)
-    if al < 0.01 then ax, ay, az, al = 0, 1, 0, 1 end
-    b3.body_set_transform(b, x, tbl.BALL_R + 10, z,
-                          ax / al, ay / al, az / al,
-                          love.math.random() * math.pi * 2)
-  end
+  -- Box2D: x/y is the PLANE. The renderer calls it x/z because the camera
+  -- looks down the 3D y axis, so "z" here is Box2D's y. Same number.
+  local b = b2.body_new(world, x, z, 2)   -- 2 = DYNAMIC
+  local sh = b2.shape_circle(b, tbl.BALL_R, {
+    density     = 1.0,
+    friction    = tbl.BALL_FRICTION,
+    restitution = tbl.BALL_RESTITUTION,
+  })
+  -- Damping is the only thing that stops a marble: there is no cloth and no
+  -- gravity, so without it a shot would ring around the box forever.
+  b2.body_set_linear_damping(b, tbl.BALL_DAMPING)
+  b2.body_set_bullet(b, isCue == true)
 
-  local rec = { tier = tier, body = b, shape = s, dead = false, x = x, z = z,
-                combo = 1, comboT = 0 }
+  local rec = { tier = tier, body = b, shape = sh, dead = false, x = x, z = z,
+                combo = 1, comboT = 0,
+                -- Spin is COSMETIC now. A 2D solver has no notion of a ball
+                -- rolling, but a sphere that slides without turning reads as
+                -- a sprite, so the renderer spins each marble about an axis
+                -- derived from its own travel. Random start so a fresh table
+                -- is not a row of identically-posed balls.
+                spin = love.math.random() * math.pi * 2,
+                axx = love.math.random() * 2 - 1,
+                axz = love.math.random() * 2 - 1 }
   balls[#balls + 1] = rec
   return rec
 end
@@ -478,7 +473,7 @@ local function loadLauncher()
 end
 
 local function newGame()
-  for _, b in ipairs(balls) do b3.body_destroy(b.body) end
+  for _, b in ipairs(balls) do b2.body_destroy(b.body) end
   for i = #balls, 1, -1 do balls[i] = nil end
 
   -- A few balls already on the field, so the first shot has something to
@@ -508,11 +503,13 @@ function love.load()
 
   -- The metre scale must be set BEFORE the world exists: every length that
   -- follows (gravity, shape radii, thresholds) is converted through it.
-  b3.set_meter(tbl.PPM)
+  b2.set_meter(tbl.PPM)
   -- gravity in px/s^2: 9.81 m/s^2 at the table's own scale. Hardcoding 980
   -- was right only for the old (wrong) 64 px/m.
-  world = b3.world_new(0, -9.81 * tbl.PPM, 0)
-  b3.world_set_hit_threshold(world, 0.6 * tbl.PPM)  -- ~0.6 m/s
+  -- ZERO GRAVITY. This is a top-down arena, not a table with a floor: the
+  -- marbles are constrained to the plane by the simulation itself rather
+  -- than by resting on something.
+  world = b2.world_new(0, 0)
   table3d = tbl.build(world)
 
   sounds.loadAll()
@@ -656,7 +653,10 @@ end
 -- ── shot bookkeeping ──────────────────────────────────────────────────
 local function anyMoving()
   for _, b in ipairs(balls) do
-    if not b.dead and b3.body_is_awake(b.body) then return true end
+    if not b.dead then
+      local vx, vy = b2.body_velocity(b.body)
+      if vx * vx + vy * vy > 4 then return true end
+    end
   end
   return false
 end
@@ -664,14 +664,12 @@ end
 local function fire(angle, pow)
   if not cueBall then return end
   local v = SHOT_V_MIN + (SHOT_V_MAX - SHOT_V_MIN) * pow
-  local imp = b3.body_mass(cueBall.body) * v * b3.get_meter()
-  b3.body_set_awake(cueBall.body, true)
+  local imp = b2.body_mass(cueBall.body) * v * b2.get_meter()
   local ix = math.cos(angle) * imp
   local iz = math.sin(angle) * imp
   -- Strike ABOVE centre so the ball leaves rolling, not sliding. An impulse
   -- through the centre of mass makes no torque at all.
-  local cx, cy, cz = b3.body_position(cueBall.body)
-  b3.body_apply_impulse_at(cueBall.body, ix, 0, iz, cx, cy + tbl.BALL_R * 0.45, cz)
+  b2.body_apply_impulse(cueBall.body, ix, iz)
   cueBall = nil          -- it is a field ball now; a new one loads on settle
   state.phase = "roll"
   rollFrames = 0
@@ -679,9 +677,9 @@ local function fire(angle, pow)
 end
 
 -- Find a ball by its physics shape, so contact events can be mapped back.
-local function ballOfShape(sh)
+local function ballOfBody(h)
   for _, b in ipairs(balls) do
-    if b.shape == sh and not b.dead then return b end
+    if b.body == h and not b.dead then return b end
   end
   return nil
 end
@@ -700,52 +698,42 @@ end
 -- cheaper and free of the "did they overlap enough?" tuning that a distance
 -- test needs.
 local function observe()
-  local ev = b3.contact_events(world)
-  for _, h in ipairs(ev.hits or {}) do
-    local wallHit = table3d.cushionShapes[h.a] or table3d.cushionShapes[h.b]
-    if wallHit then
-      -- A BANK RAISES THE COMBO. With no pockets the walls are the only
-      -- geometry, so rewarding the bank shot is what gives the field its
-      -- shape -- otherwise every shot is a straight line and the arena
-      -- may as well be empty.
-      local b = ballOfShape(h.a) or ballOfShape(h.b)
-      if b and b.combo < 8 then
-        b.combo = b.combo * 2
-        b.comboT = 60
+  -- Box2D reports contacts as pairs of BODY handles. Walls are not bodies
+  -- here -- the boundary is a clamp, not a collider (see field.lua) -- so
+  -- every contact is ball-on-ball and the only question is whether the two
+  -- share a tier.
+  for _, pair in ipairs(b2.contacts(world)) do
+    local b1 = ballOfBody(pair[1])
+    local b2b = ballOfBody(pair[2])
+    if b1 and b2b and b1 ~= b2b and b1.tier == b2b.tier
+       and not b1.dead and not b2b.dead then
+      local tier = b1.tier
+      local combo = math.max(b1.combo, b2b.combo)
+
+      if tier >= ballart.TIERS then
+        -- Top tier detonates: clears the board and wins.
+        for _, b in ipairs(balls) do b.dead = true end
+        state.score = state.score + merge.mergeScore(tier, combo) * 5
+        state.won = true
+        state.phase = "over"
+        state.message = "BOARD CLEAR"
+        state.messageMood = "win"
+        sounds.play("win", 0.7)
+        return
       end
-    else
-      local b1 = ballOfShape(h.a)
-      local b2 = ballOfShape(h.b)
-      if b1 and b2 and b1 ~= b2 and b1.tier == b2.tier and not b1.dead and not b2.dead then
-        local tier = b1.tier
-        local combo = math.max(b1.combo, b2.combo)
 
-        if tier >= ballart.TIERS then
-          -- Merging the TOP tier detonates: it clears the board and is the
-          -- win. Everything on the table cashes out.
-          for _, b in ipairs(balls) do b.dead = true end
-          state.score = state.score + merge.mergeScore(tier, combo) * 5
-          state.won = true
-          state.phase = "over"
-          state.message = "BOARD CLEAR"
-          state.messageMood = "win"
-          sounds.play("win", 0.7)
-          return
-        end
+      -- b2b dies, b1 is promoted IN PLACE so the merged marble keeps its
+      -- momentum -- two beads fusing, rather than one vanishing and another
+      -- appearing somewhere.
+      b2b.dead = true
+      b1.tier = tier + 1
+      b1.combo = math.min(8, combo * 2)
+      b1.comboT = 60
 
-        -- b2 dies, b1 is promoted in place. Promoting rather than spawning
-        -- keeps the merged ball's momentum, which reads as two marbles
-        -- fusing rather than as one vanishing and another appearing.
-        b2.dead = true
-        b1.tier = tier + 1
-        b1.combo = math.min(8, combo * 2)
-        b1.comboT = 60
-
-        local gained = merge.mergeScore(tier + 1, combo)
-        state.score = state.score + gained
-        addPopup(b1.x, b1.z, tostring(gained))
-        sounds.play("chips", 0.6)
-      end
+      local gained = merge.mergeScore(tier + 1, combo)
+      state.score = state.score + gained
+      addPopup(b1.x, b1.z, tostring(gained))
+      sounds.play("chips", 0.6)
     end
   end
 end
@@ -774,7 +762,7 @@ function love.update(dt)
   for k = #balls, 1, -1 do
     local b = balls[k]
     if b.dead then
-      b3.body_destroy(b.body)
+      b2.body_destroy(b.body)
       table.remove(balls, k)
     end
   end
@@ -789,13 +777,24 @@ function love.update(dt)
   end
 
   if state.phase == "roll" then
-    b3.world_step(world, 1 / 120, 8)
-    b3.world_step(world, 1 / 120, 8)
+    b2.world_step(world, 1 / 60, 8)
+    -- THE BOUNDARY, applied after every step. This is what makes escaping
+    -- impossible rather than merely unlikely: reflect and then HARD-CLAMP
+    -- back inside, exactly as the original does. A bank also feeds the
+    -- combo, since with no pockets the walls are the whole toolkit.
+    for _, b in ipairs(balls) do
+      if not b.dead and tbl.clampToField(b.body, tbl.BALL_R) then
+        if b.combo < 8 then
+          b.combo = b.combo * 2
+          b.comboT = 60
+        end
+      end
+    end
     observe()
     rollFrames = rollFrames + 1
 
     for _, b in ipairs(balls) do
-      local x, _, z = b3.body_position(b.body)
+      local x, z = b2.body_position(b.body)
       b.x, b.z = x, z
     end
 
@@ -818,9 +817,12 @@ function love.update(dt)
   end
 
   -- keep the world ticking gently so bodies settle visually
-  b3.world_step(world, 1 / 60, 4)
+  b2.world_step(world, 1 / 60, 4)
   for _, b in ipairs(balls) do
-    local x, _, z = b3.body_position(b.body)
+    if not b.dead then tbl.clampToField(b.body, tbl.BALL_R) end
+  end
+  for _, b in ipairs(balls) do
+    local x, z = b2.body_position(b.body)
     b.x, b.z = x, z
   end
   state.life = merge.life(balls, MAX_ALLOWED)
@@ -1002,7 +1004,8 @@ function love.draw()
         -- FREEZES at the instant a ball is flagged pocketed -- so a stale
         -- pair could paint a shadow on empty cloth for a ball that is no
         -- longer being drawn. Whatever is rendered must be what casts.
-        local wx, wy, wz = b3.body_position(b.body)
+        local wx, wz = b2.body_position(b.body)
+        local wy = 0
         local sx, sy = worldToScreen(wx, wz)
         -- No pockets here, so every ball on the field casts. Only a ball
         -- that has somehow left the surface is skipped.
@@ -1025,15 +1028,19 @@ function love.draw()
   dream:addNewLight("point", dream.vec3(0, 8, 0), dream.vec3(1, 0.97, 0.92), 70)
   for bi, b in ipairs(balls) do
     if not b.dead then
-      local x, y, z = b3.body_position(b.body)
-      -- Draw with the body's ORIENTATION, not just its position.
+      local x, z = b2.body_position(b.body)
+      local y = 0
+      -- SPIN IS COSMETIC, and has to be, because the solver is 2D.
       --
-      -- dream:draw(mesh, x, y, z) builds a translation-only matrix, which
-      -- throws away the rotation Box3D computed -- so the balls slid across
-      -- the cloth like sprites and the whole thing read as 2D physics on a
-      -- 3D table. The numbers painted on a ball are the tell: if they never
-      -- turn, it is not rolling.
-      local qx, qy, qz, qw = b3.body_rotation(b.body)
+      -- Box2D knows nothing about a marble rolling; it only pushes discs
+      -- around a plane. But a textured sphere that slides without turning
+      -- reads instantly as a sprite being dragged, which is the exact
+      -- complaint that got the 3D physics into Eight Ball in the first
+      -- place. So the roll is DERIVED: the ball turns about the axis
+      -- perpendicular to its own travel, by the distance it moved over its
+      -- circumference. That is what real rolling is, computed rather than
+      -- simulated, and it is indistinguishable from across a room.
+      local qx, qy, qz, qw = rollQuat(b)
       -- Slot keyed by LIST INDEX, not by tier: several balls share a tier
       -- and every transform is still live when present() walks the render
       -- tasks, so they cannot share one buffer.
