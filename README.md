@@ -1,9 +1,9 @@
 # Games for Dad
 
 Original games built for my dad: 85 years old, playing on a TV from the
-couch with a gamepad. Four card games and two played with a cue. Every
-design decision follows from that player: no timers, no bust-outs, no
-button chords, big readable type.
+couch with a gamepad. Four card games, two played with a cue, and a
+match-three. Every design decision follows from that player: no timers, no
+bust-outs, no button chords, big readable type.
 
 The games are [wasmcart](https://www.npmjs.com/package/wasmcart) carts
 written in Lua. Each one is a single portable `.wasc` file that runs anywhere the
@@ -91,6 +91,12 @@ npx wasmcart jacksorbetter/jacksorbetter.wasc
 The carts are 1920x1080 and declare it in their own `conf.lua`, so they
 render the same on any engine build.
 
+The four card games ship a packed `.wasc` in the repo. **Eight Ball, Combo
+and Jewels are built from source** -- their `.wasc` and engine copy are
+build artifacts, not committed -- so run `./build.sh` in the game's
+directory first (it needs a `wasmcart-lua` checkout beside this repo, or
+`WASMCART_LUA=` pointing at one).
+
 **On Android**, each game is its own app. `wasmcart-android-lua` turns a
 cart into an installable APK -- `./build-game-apk.sh <game>.wasc` -- using
 the `icon.png` beside the cart for the launcher icon and the cart's
@@ -143,8 +149,11 @@ mapped onto the scoreboard (wins loud, losses quiet, nothing shames).
 - `<game>/icon.png` - launcher icon for the Android build (1024 adaptive
   foreground)
 - `tools/` - headless drivers used to verify a change without a device
-- `<game>/main.wasm` - the wasmcart-lua engine the cart ships with
-- `<game>/<game>.wasc` - the packed, playable cart
+- `<game>/main.wasm` - the wasmcart-lua engine the cart ships with.
+  Committed for the card games; a build artifact for the three with a
+  `build.sh`
+- `<game>/<game>.wasc` - the packed, playable cart, same split
+- `<game>/tools/` - per-game headless test drivers, where a game has them
 - `common/` - the shared card-table library and assets the games are
   built from (`common/sync.sh <game>` copies them into a cart)
 - `docs/` - how the games are built, the architecture, and the design
@@ -152,12 +161,35 @@ mapped onto the scoreboard (wins loud, losses quiet, nothing shames).
 
 ## Rebuilding a cart
 
+The three built games have a `build.sh` that resolves the engine and packer
+for you, with no hardcoded paths:
+
+```
+cd jewels && ./build.sh
+```
+
+For the card games, or to pack by hand:
+
 ```
 cd jacksorbetter
 npx wasmcart pack --wasm main.wasm --assets app \
   --name "Jacks or Better" --width 1920 --height 1080 \
   -o jacksorbetter.wasc
 ```
+
+### Testing a change
+
+Jewels carries two suites that run headlessly against the real engine:
+
+```
+cd jewels
+./tools/run-board-test.sh    # 31 rule assertions + 7 must-fail controls
+./tools/run-play-test.sh     # drives main.lua through the real input path
+```
+
+Both exit non-zero on failure, so they work in CI. The play test is the one
+that catches an animation state machine that wedges -- a failure that looks
+perfectly fine in a screenshot and is fatal in play.
 
 ## License and credits
 
