@@ -17,26 +17,26 @@ Every shot below is the real game running, captured through romdev.
 
 Classic video poker. Hold, draw, win on a pair of jacks or better.
 
-![Jacks or Better](docs/shots/jacksorbetter.png)
+<img src="docs/shots/jacksorbetter.png" alt="Jacks or Better" width="480">
 
 ### Five Card Stud &mdash; `fivecardstud/`
 
 Heads-up stud against the dealer. One hole card, bet street by street.
 
-![Five Card Stud](docs/shots/fivecardstud.png)
+<img src="docs/shots/fivecardstud.png" alt="Five Card Stud" width="480">
 
 ### Seven Card Stud &mdash; `sevencardstud/`
 
 The full game: two down, four up, one more down, best five of seven.
 
-![Seven Card Stud](docs/shots/sevencardstud.png)
+<img src="docs/shots/sevencardstud.png" alt="Seven Card Stud" width="480">
 
 ### Spades &mdash; `spades/`
 
 Partnership Spades: you and a CPU partner against two CPUs. Books, bags,
 nil, first team to 500.
 
-![Spades](docs/shots/spades.png)
+<img src="docs/shots/spades.png" alt="Spades" width="480">
 
 ### Eight Ball &mdash; `eightball/`
 
@@ -44,7 +44,7 @@ nil, first team to 500.
 Real rigid-body physics with measured billiard constants, so a struck ball
 rolls rather than slides.
 
-![Eight Ball](docs/shots/eightball.png)
+<img src="docs/shots/eightball.png" alt="Eight Ball" width="480">
 
 ### Combo &mdash; `combo/`
 
@@ -62,7 +62,7 @@ not. That design is the good part of this game and it is not ours. Our own
 code, layout (a 4:3 field shot from the right, rather than a square arena
 shot from the bottom), 3D rendering and physics are original.
 
-![Combo](docs/shots/combo.png)
+<img src="docs/shots/combo.png" alt="Combo" width="480">
 
 ## Playing
 
