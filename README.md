@@ -1,9 +1,9 @@
 # Games for Dad
 
 Original games built for my dad: 85 years old, playing on a TV from the
-couch with a gamepad. Four card games, two played with a cue, and a
-match-three. Every design decision follows from that player: no timers, no
-bust-outs, no button chords, big readable type.
+couch with a gamepad. Four card games, two played with a cue, a
+match-three and a round of mini golf. Every design decision follows from
+that player: no timers, no bust-outs, no button chords, big readable type.
 
 The games are [wasmcart](https://www.npmjs.com/package/wasmcart) carts
 written in Lua. Each one is a single portable `.wasc` file that runs anywhere the
@@ -82,6 +82,28 @@ does not.
 
 <img src="docs/shots/jewels.png" alt="Jewels" width="480">
 
+### Minigolf &mdash; `minigolf/`
+
+Twenty-two holes. Drag back from the ball to aim and load, let go to hit.
+Water costs a stroke and replays from where you were; sand slows you down;
+the yellow pads push you the way their arrows point.
+
+**No stroke limit and no losing score.** Par is shown because it is
+interesting, never as a threshold. The original refuses the cup above a
+speed limit, so a firm putt that goes in gets rejected -- here it drops
+and rattles in.
+
+**The hole layouts are [frozenjs/minigolf](https://github.com/frozenjs/minigolf)'s**
+(MIT, Iced Development LLC), converted from that game's own level data by
+`tools/convert-levels.mjs` -- 431 pieces of collision geometry across 22
+holes. The three sounds are its own too. The physics, rendering and
+controls here are new: the course is drawn as vector graphics from the
+collision shapes themselves, so what you see is exactly what you hit, and
+the ball texture is generated with 392 dimples on a sphere
+(`tools/make-ball.mjs`).
+
+<img src="docs/shots/minigolf.png" alt="Minigolf" width="480">
+
 ## Playing
 
 ```
@@ -91,8 +113,8 @@ npx wasmcart jacksorbetter/jacksorbetter.wasc
 The carts are 1920x1080 and declare it in their own `conf.lua`, so they
 render the same on any engine build.
 
-The four card games ship a packed `.wasc` in the repo. **Eight Ball, Combo
-and Jewels are built from source** -- their `.wasc` and engine copy are
+The four card games ship a packed `.wasc` in the repo. **Eight Ball, Combo,
+Jewels and Minigolf are built from source** -- their `.wasc` and engine copy are
 build artifacts, not committed -- so run `./build.sh` in the game's
 directory first (it needs a `wasmcart-lua` checkout beside this repo, or
 `WASMCART_LUA=` pointing at one).
@@ -104,8 +126,8 @@ manifest for the app's name and version. Those builds run the engine as
 native code rather than wasm: about 6 MB per game instead of 64, at a
 locked 60 fps.
 
-**Eight Ball and Combo are the odd ones out on controls**, because a cue is
-not a card: LEFT/RIGHT swing the aim, UP/DOWN draw the cue back, and the
+**Eight Ball, Combo and Minigolf are the odd ones out on controls**, because
+a cue is not a card: LEFT/RIGHT swing the aim, UP/DOWN draw the cue back, and the
 confirm button strikes. How far the cue is drawn back IS the power, and the
 stick fades cream to red as it grows, so there is no meter to read and
 nothing timed.
@@ -119,6 +141,11 @@ Controls, in every game:
 - **South or east face button** confirms. Both always work; there is no
   wrong confirm button.
 - That is the entire pad scheme.
+
+**Minigolf uses the same language as the cue games**: LEFT/RIGHT aim,
+DOWN pulls the putter back, and the confirm button strikes. On touch, drag
+back from the ball and let go -- the drag IS the shot, reversed, exactly
+like drawing a real putter.
 
 **Jewels adds one idea to it**, because a grid is not a list: confirm picks
 a jewel *up*, and then a DIRECTION swaps it that way. One press, one push,
@@ -187,6 +214,16 @@ cd jewels
 ./tools/run-play-test.sh     # drives main.lua through the real input path
 ```
 
+Minigolf's assets are generated rather than committed as opaque binaries,
+so they can be rebuilt and reviewed:
+
+```
+cd minigolf
+node tools/convert-levels.mjs ../../minigolf/src/levelData.js   # the 22 holes
+node tools/make-ball.mjs                                        # the ball texture
+python3 tools/make-icon.py                                      # the launcher icon
+```
+
 Both exit non-zero on failure, so they work in CI. The play test is the one
 that catches an animation state machine that wedges -- a failure that looks
 perfectly fine in a screenshot and is fatal in play.
@@ -201,6 +238,11 @@ Code is [MIT](LICENSE).
 - Font: Atkinson Hyperlegible Bold, by the Braille Institute. The font
   remains under its own SIL Open Font License. Chosen because it is
   designed for low-vision readers.
+- **Minigolf's hole layouts and sounds are frozenjs/minigolf's**
+  (MIT, Iced Development LLC, <https://github.com/frozenjs/minigolf>). The
+  22 hole designs are converted from that project's level data and the
+  clack/hole/laugh sounds are its own, reused under the MIT licence. The
+  rendering, physics and controls here are new.
 - **Combo's merge mechanic is NuSan's**, from Combo Pool (PICO-8, p8jam2
   2019, <https://www.lexaloffle.com/bbs/?tid=3467>). The original cart is
   CC BY-NC-SA 4.0. No code, art or assets were copied from it -- this is an
