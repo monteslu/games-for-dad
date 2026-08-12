@@ -72,19 +72,36 @@ end
 -- solid-vs-stripe, both always visible, and read the number when it
 -- happens to face you. The scoreboard tray is where numbers are
 -- guaranteed, because those balls are posed rather than rolled.
-local CAM_H, CAM_TILT, CAM_FOV = 8.6, 0.6, 60
+-- STRAIGHT OVERHEAD, through a NARROW lens.
+--
+-- Two separate reasons, and both were visible on screen:
+--
+-- 1. No tilt. This is a top-down arena, not a pool table you stand at, so
+--    a tilt buys nothing and costs a trapezoid -- the far edge of the field
+--    renders smaller than the near edge, and the marbles with it.
+--
+-- 2. Narrow FOV. A sphere off the view axis projects as an ELLIPSE, and
+--    the stretch goes as 1/cos(angle from axis). At 60 degrees across a
+--    1440px-wide field the far marbles were stretched ~9% -- which is
+--    exactly the "why are the balls sometimes oval" that monteslu spotted.
+--    At 30 degrees it is 2%, below noticing. The camera moves back to keep
+--    the same framing, which is the whole trade: distance buys roundness.
+--
+-- (Eight Ball hit this same thing on its scoreboard chips and fixed it the
+-- same way. Different symptom, identical cause.)
+local CAM_H, CAM_TILT, CAM_FOV = 18, 0, 30
 
 -- The field is NOT centred on screen: it fills the left 1440 px of 1920 and
 -- the right 480 is the cue's column. So the camera looks at a point offset
 -- from the field's centre, which slides the field left in frame without
--- skewing it (moving the EYE sideways instead would shear the table).
+-- skewing it (moving the EYE sideways instead would shear the field).
 --
--- MEASURED, not derived: a +x shift moved the field RIGHT (under the HUD
--- column), so the field follows the target and the shift is NEGATIVE to
--- push it left. Stating the measured direction because the projection's
--- handedness makes the derivation easy to get backwards -- it already
--- caught me once on the aim angle.
-local CAM_SHIFT = -1.60
+-- MEASURED every time, never derived. The sign has flipped on me twice
+-- (it depends on the up-vector convention as well as the projection), and
+-- the magnitude does not scale the way the algebra suggests -- a LOWER
+-- camera showed MORE field here, not less. Both numbers came from reading
+-- the felt's pixel extent out of a screenshot and iterating.
+local CAM_SHIFT = 2.1
 
 -- 3Dream's camera.transform is a WORLD matrix: present() reads the eye
 -- position out of its translation column and the forward axis out of column
@@ -92,9 +109,17 @@ local CAM_SHIFT = -1.60
 -- wrong place looking the wrong way, with no error anywhere.
 local function camWorld(eye, target)
   target = target or dream.vec3(0, 0, 0)
-  local up = dream.vec3(0, 1, 0)
   local f = (target - eye):normalize()
-  if math.abs(f:dot(up)) > 0.999 then up = dream.vec3(0, 0, 1) end
+  -- UP is +Z, not +Y, because this camera looks straight DOWN the y axis.
+  --
+  -- The usual up vector (0,1,0) is PARALLEL to the view direction here, so
+  -- the cross products below collapse and the basis is garbage. The old
+  -- code had a fallback for that -- flip up to (0,0,1) when nearly parallel
+  -- -- but a fallback that only fires at the degenerate moment means the
+  -- camera's whole orientation SNAPS the instant the tilt reaches zero, and
+  -- the marbles render as squashed ellipses. Naming +Z as up unconditionally
+  -- makes straight-down the normal case rather than the special one.
+  local up = dream.vec3(0, 0, 1)
   local r = up:cross(f):normalize()
   local u = f:cross(r):normalize()
   return dream.mat4({
@@ -307,7 +332,9 @@ local function rollQuat(b)
   b.px, b.pz = x, z
   local d = math.sqrt(dx * dx + dz * dz)
   if d > 0.01 then
-    -- perpendicular in the plane: (dz, -dx), normalised
+    -- perpendicular to travel, in the plane, NORMALISED. Dividing by d is
+    -- what makes it a unit axis; without that the quaternion below scales
+    -- the mesh instead of rotating it.
     b.axx, b.axz = dz / d, -dx / d
     b.spin = b.spin + d / tbl.BALL_R
   end
@@ -333,33 +360,33 @@ local function quatMat(slot, qx, qy, qz, qw, tx, ty, tz)
   return m
 end
 
--- How far the cueBall may be drawn back, in TABLE pixels.
+-- How far the cue may be drawn back, in FIELD pixels.
 --
--- The limit is the SMALLEST margin around the table, not the largest. A pull
--- has to be equally achievable in every direction: if the cap came from the
--- generous gap above the table, a player aiming sideways would run out of
--- screen before reaching full power and the same gesture would mean
--- different things depending on which way they were shooting.
+-- LONGER than Eight Ball's, because this layout has room Eight Ball did
+-- not: the launcher sits at the right edge and the cue pulls back into the
+-- 480 px HUD column, which is deliberately kept clear for exactly this.
 --
--- Derived from the live projection so it stays correct if the camera
--- framing changes, with a fallback for the first frame before one exists.
+-- This changes RESOLUTION, not POWER. The shot is fired with
+-- `pull / PULL_MAX`, so a longer travel means the same 0..1 range spread
+-- over more screen -- finer control at every power level, and full power
+-- still means exactly what it meant before. A player who yanks the cue all
+-- the way back gets the same shot they always did, just with more room to
+-- have chosen something gentler on the way.
+--
+-- Measured from the RIGHT rail to the right edge of the screen, which is
+-- the direction the cue actually travels here (shots go LEFT, so the stick
+-- extends right). Derived from the live projection so it stays correct if
+-- the camera framing moves.
 local function pullMax()
-  -- A CONSTANT distance: the gap from the top of the green to the top of
-  -- the screen. It does not depend on where the cueBall ball is, so the same
-  -- gesture means the same power everywhere on the table -- and because it
-  -- is the SMALLEST margin around the cloth, a full pull is reachable in
-  -- every direction rather than running out of screen sideways.
-  --
-  -- The old version added a half-table term, which made the cap grow when
-  -- the ball sat in the middle. That is exactly the inconsistency this is
-  -- supposed to remove.
-  local _, topY = worldToScreen(0, -tbl.H)
-  local _, midY = worldToScreen(0, 0)
-  if not (topY and midY) then return tbl.H end
-  local pxPerTablePy = math.abs(midY - topY) / tbl.H
-  if pxPerTablePy < 0.0001 then return tbl.H end
-  -- topY is the screen y of the top rail; the gap above it is topY itself.
-  return math.max(120, topY / pxPerTablePy)
+  local rightX = worldToScreen(-tbl.W, 0)      -- world -x renders RIGHT
+  local midX   = worldToScreen(0, 0)
+  if not (rightX and midX) then return tbl.W end
+  local pxPerFieldPx = math.abs(rightX - midX) / tbl.W
+  if pxPerFieldPx < 0.0001 then return tbl.W end
+  -- the gap from the right rail to the screen edge, in field pixels
+  local W = love.graphics.getWidth()
+  local gap = math.max(0, W - rightX)
+  return math.max(200, gap / pxPerFieldPx)
 end
 
 -- ── geometry builders ─────────────────────────────────────────────────
@@ -445,8 +472,14 @@ local function addBall(tier, x, z, isCue)
                 -- derived from its own travel. Random start so a fresh table
                 -- is not a row of identically-posed balls.
                 spin = love.math.random() * math.pi * 2,
-                axx = love.math.random() * 2 - 1,
-                axz = love.math.random() * 2 - 1 }
+                -- The spin axis MUST be a unit vector. A quaternion built
+                -- from a non-unit axis is not a rotation -- it carries a
+                -- scale, and the ball renders as a squashed ellipse. These
+                -- used to be raw random() * 2 - 1, so any ball that had not
+                -- moved yet (and so never had its axis recomputed) drew as
+                -- an oval. That is the "why are the balls sometimes oval"
+                -- bug; the perspective FOV was only ever a small part of it.
+                axx = 1, axz = 0 }
   balls[#balls + 1] = rec
   return rec
 end

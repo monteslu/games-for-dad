@@ -38,12 +38,18 @@ M.U = 92
 -- so a 52 px ball wants to be ~0.1 m, not 52.
 M.PPM = 520
 
--- Marble material. Restitution high (they are glass beads knocking about,
--- not billiard balls damped by cloth) and damping low so a shot carries
--- across the field and still has energy to bank.
-M.BALL_RESTITUTION = 0.62
+-- Marble material.
+--
+-- Restitution stays high -- these are glass beads knocking about, not
+-- billiard balls deadened by cloth, and a lively bank is where the combo
+-- comes from. DAMPING is what ends a shot, and it is deliberately firm:
+-- the player is waiting on the table to settle before the next launch, and
+-- a marble that drifts for four seconds after the interesting part is over
+-- is just dead air between turns. Firm enough to settle promptly, not so
+-- firm that a shot cannot cross the field and still bank.
+M.BALL_RESTITUTION = 0.60
 M.BALL_FRICTION    = 0.02
-M.BALL_DAMPING     = 0.62
+M.BALL_DAMPING     = 2.4
 
 function M.build(world)
   return { world = world }
