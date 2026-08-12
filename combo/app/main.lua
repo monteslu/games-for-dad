@@ -378,7 +378,7 @@ end
 -- extends right). Derived from the live projection so it stays correct if
 -- the camera framing moves.
 local function pullMax()
-  local rightX = worldToScreen(-tbl.W, 0)      -- world -x renders RIGHT
+  local rightX = worldToScreen(tbl.W, 0)       -- world +x renders RIGHT
   local midX   = worldToScreen(0, 0)
   if not (rightX and midX) then return tbl.W end
   local pxPerFieldPx = math.abs(rightX - midX) / tbl.W
@@ -489,7 +489,12 @@ end
 -- so the launcher lives at -x in world space. Stating it because getting it
 -- backwards just mirrors the game rather than erroring.)
 local function launchSpot()
-  return -tbl.W + tbl.BALL_R * 1.6, 0
+  -- +x renders on the RIGHT under this camera. MEASURED, not derived: with
+  -- -x the launcher spawned on the left and shots travelled the wrong way
+  -- across the field. (The screen sense flipped when the camera went
+  -- overhead and the up-vector became +Z; anything that assumed the old
+  -- handedness silently reversed.)
+  return tbl.W - tbl.BALL_R * 1.6, 0
 end
 
 -- Put a fresh ball on the launcher. Every shot introduces a NEW ball, which
@@ -526,7 +531,10 @@ local function newGame()
   state.life = 100
   state.lifeShown = 100
   state.won = false
-  aimAngle = 0        -- straight down the field, toward -x... which is LEFT
+  -- Point ACROSS the field from the right-hand launcher. angle 0 is +x,
+  -- which is now the RIGHT (the wall the launcher backs onto), so the
+  -- opening aim is pi -- straight down the field to the left.
+  aimAngle = math.pi
   pull = 0
 end
 
