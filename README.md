@@ -10,13 +10,40 @@ wasmcart player runs.
 
 ## The games
 
-| Game | Folder | What it is |
-|---|---|---|
-| Jacks or Better | `jacksorbetter/` | Classic video poker. Hold, draw, win on a pair of jacks or better. |
-| Five Card Stud | `fivecardstud/` | Heads-up stud against the dealer. One hole card, bet street by street. |
-| Seven Card Stud | `sevencardstud/` | The full game: two down, four up, one more down, best five of seven. |
-| Spades | `spades/` | Partnership Spades: you and a CPU partner against two CPUs. Books, bags, nil, first team to 500. |
-| Eight Ball | `eightball/` | 3D top-down 8-ball against the house. Aim, draw the cue back, let it go. |
+Every shot below is the real game running, captured through romdev.
+
+### Jacks or Better &mdash; `jacksorbetter/`
+
+Classic video poker. Hold, draw, win on a pair of jacks or better.
+
+![Jacks or Better](docs/shots/jacksorbetter.png)
+
+### Five Card Stud &mdash; `fivecardstud/`
+
+Heads-up stud against the dealer. One hole card, bet street by street.
+
+![Five Card Stud](docs/shots/fivecardstud.png)
+
+### Seven Card Stud &mdash; `sevencardstud/`
+
+The full game: two down, four up, one more down, best five of seven.
+
+![Seven Card Stud](docs/shots/sevencardstud.png)
+
+### Spades &mdash; `spades/`
+
+Partnership Spades: you and a CPU partner against two CPUs. Books, bags,
+nil, first team to 500.
+
+![Spades](docs/shots/spades.png)
+
+### Eight Ball &mdash; `eightball/`
+
+3D top-down 8-ball against the house. Aim, draw the cue back, let it go.
+Real rigid-body physics with measured billiard constants, so a struck ball
+rolls rather than slides.
+
+![Eight Ball](docs/shots/eightball.png)
 
 ## Playing
 
