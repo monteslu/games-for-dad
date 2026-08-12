@@ -1,5 +1,9 @@
 -- merge.lua - the rules of Combo, such as they are.
 --
+-- The rule and its economy are NuSan's, from Combo Pool (PICO-8, p8jam2
+-- 2019, https://www.lexaloffle.com/bbs/?tid=3467). Independently
+-- implemented here, but the design is theirs.
+--
 -- There is exactly one rule: two balls of the same tier that touch become
 -- one ball of the next tier up. Everything else in this file is the
 -- consequence of that rule.

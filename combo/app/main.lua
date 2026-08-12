@@ -1,6 +1,20 @@
 -- Combo - merge marbles on a 4:3 field. Shoot from the right, no pockets.
 --
--- Rendering is 3DreamEngine, physics is Box3D, and the whole control scheme
+-- THE MERGE MECHANIC IS NUSAN'S, from Combo Pool (PICO-8, p8jam2 2019):
+--   https://www.lexaloffle.com/bbs/?tid=3467
+-- Two same-colour marbles fuse into the next colour up; the life bar
+-- measures CLUTTER rather than time, on a cubic curve, with per-tier costs
+-- inverted against per-tier scores so that clearing the table and scoring
+-- are the same act. That design is the reason this game works and it is
+-- not ours.
+--
+-- No code, art or assets were copied. The original is CC BY-NC-SA 4.0;
+-- this is an independent implementation of the same idea, with our own
+-- layout (4:3 field shot from the right, not a square arena shot from the
+-- bottom), 3D rendering, physics and cue.
+--
+-- Rendering is 3DreamEngine, physics is Box2D (this is a 2D game drawn in
+-- 3D -- see field.lua), and the whole control scheme
 -- is the family's: d-pad moves, one button commits, and every action is also
 -- a tap. See docs/DESIGN.md -- this is built for one 85-year-old on a couch
 -- with a gamepad, and the rules bend where the rule book would punish him

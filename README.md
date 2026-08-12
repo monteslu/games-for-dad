@@ -54,6 +54,14 @@ no timer: the life bar IS how crowded the table is, and a junk marble costs
 the most to keep while being worth the least, so clearing clutter and
 scoring are the same move.
 
+**The merge mechanic is [NuSan](https://nusan.itch.io/)'s**, from
+[Combo Pool](https://www.lexaloffle.com/bbs/?tid=3467) (PICO-8, p8jam2
+2019) — including the idea that the life bar should measure clutter rather
+than time, and the cubic curve that makes it relaxed until it suddenly is
+not. That design is the good part of this game and it is not ours. Our own
+code, layout (a 4:3 field shot from the right, rather than a square arena
+shot from the bottom), 3D rendering and physics are original.
+
 ![Combo](docs/shots/combo.png)
 
 ## Playing
@@ -136,3 +144,8 @@ Code is [MIT](LICENSE).
 - Font: Atkinson Hyperlegible Bold, by the Braille Institute. The font
   remains under its own SIL Open Font License. Chosen because it is
   designed for low-vision readers.
+- **Combo's merge mechanic is NuSan's**, from Combo Pool (PICO-8, p8jam2
+  2019, <https://www.lexaloffle.com/bbs/?tid=3467>). The original cart is
+  CC BY-NC-SA 4.0. No code, art or assets were copied from it -- this is an
+  independent implementation of the same idea -- but the design is the
+  reason the game works and the credit belongs to its author.
