@@ -1,8 +1,9 @@
 # Games for Dad
 
-Original card games built for my dad: 85 years old, playing on a TV from
-the couch with a gamepad. Every design decision follows from that player.
-No timers, no bust-outs, no button chords, big readable type.
+Original games built for my dad: 85 years old, playing on a TV from the
+couch with a gamepad. Four card games and two played with a cue. Every
+design decision follows from that player: no timers, no bust-outs, no
+button chords, big readable type.
 
 The games are [wasmcart](https://www.npmjs.com/package/wasmcart) carts
 written in Lua. Each one is a single portable `.wasc` file that runs anywhere the
@@ -45,6 +46,16 @@ rolls rather than slides.
 
 ![Eight Ball](docs/shots/eightball.png)
 
+### Combo &mdash; `combo/`
+
+Shoot marbles across a field; two of the same colour merge into the next
+colour up. Seven tiers, and merging the top one clears the board. There is
+no timer: the life bar IS how crowded the table is, and a junk marble costs
+the most to keep while being worth the least, so clearing clutter and
+scoring are the same move.
+
+![Combo](docs/shots/combo.png)
+
 ## Playing
 
 ```
@@ -61,12 +72,13 @@ manifest for the app's name and version. Those builds run the engine as
 native code rather than wasm: about 6 MB per game instead of 64, at a
 locked 60 fps.
 
-**Eight Ball is the odd one out on controls**, because a cue is not a card:
-LEFT/RIGHT swing the aim, UP/DOWN draw the cue back, and the confirm button
-strikes. How far the cue is drawn back IS the power, and the stick fades
-cream to red as it grows, so there is no meter to read and nothing timed.
-On a phone the same shot is one gesture: drag away from the cue ball to aim
-and load it, lift your finger to shoot.
+**Eight Ball and Combo are the odd ones out on controls**, because a cue is
+not a card: LEFT/RIGHT swing the aim, UP/DOWN draw the cue back, and the
+confirm button strikes. How far the cue is drawn back IS the power, and the
+stick fades cream to red as it grows, so there is no meter to read and
+nothing timed.
+On a phone the same shot is one gesture: drag away from the ball to aim and
+load it, lift your finger to shoot.
 
 Controls, in every game:
 
