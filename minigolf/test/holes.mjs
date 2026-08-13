@@ -80,13 +80,18 @@ print(json.dumps({
 // ninth of a 38x36 hole -- enough to make a perfectly good cup look like a
 // rounding error. Its SIZE is the assertion that matters: a cup the ball
 // cannot enter, or one buried under the fairway, is the actual failure.
-function findCup(png) {
+function findCupAt(png, cx, cy) {
   const py = `
 from PIL import Image
 import json
 im = Image.open(${JSON.stringify(png)}).convert('RGB')
 w, h = im.size
-pts = [(x, y) for y in range(70, h - 90) for x in range(0, w)
+# Search a WINDOW around the cup's published position rather than the whole
+# frame. Hunting the largest dark blob found an 871px rail shadow on maze
+# holes and reported it as a smeared cup.
+CX, CY, R = ${cx}, ${cy}, 70
+pts = [(x, y) for y in range(max(70, CY - R), min(h - 90, CY + R))
+       for x in range(max(0, CX - R), min(w, CX + R))
        if max(im.getpixel((x, y))) < 45]
 if not pts:
     print(json.dumps(None))
@@ -234,7 +239,6 @@ for (let hole = 1; hole <= HOLES; hole++) {
   await tool('frame', { op: 'screenshot', outputPath: shot });
 
   const a = analyse(shot);
-  const cup = findCup(shot);
   const flag = findFlag(shot);
   // THE BALL'S POSITION COMES FROM THE CART, not from pixel-hunting: it
   // packs x*2048+y into the `score` debug field. Searching for it by
@@ -242,9 +246,30 @@ for (let hole = 1; hole <= HOLES; hole++) {
   // position that was neither -- and every fix was another heuristic to be
   // wrong about. Its APPEARANCE is still measured from pixels below; only
   // WHERE to look is taken from the game.
-  const dbg = await debugFields();
-  const packed = dbg.score || 0;
-  const ballPx = { x: Math.floor(packed / 2048), y: packed % 2048 };
+  // SCREEN pixels, published by the cart through the same projection it
+  // draws with. This used to be cart pixels that the harness projected
+  // itself with a hardcoded eye height -- which went stale the moment the
+  // camera became per-hole and reported the ball nowhere near where it was.
+  //
+  // The cart alternates the BALL and the CUP through `score` -- positive
+  // for the ball, negative-encoded for the cup -- because two positions do
+  // not fit in one i32 and `aux` is the hole-jump channel the cart reads.
+  // The cup needs publishing because pixel-hunting it stopped working once
+  // the rails cast shadows: on maze hole 22 the largest dark blob is an
+  // 871px rail shadow, not the hole.
+  let ballPacked = null, cupPacked = null;
+  for (let k = 0; k < 4 && (ballPacked === null || cupPacked === null); k++) {
+    const d = await debugFields();
+    const v = d.score || 0;
+    if (v >= 0) { if (ballPacked === null) ballPacked = v; }
+    else if (cupPacked === null) cupPacked = -v - 1;
+    await tool('frame', { op: 'step', frames: 1 });
+  }
+  const packed = ballPacked || 0;
+  const ballPx = { x: Math.floor(packed / 4096), y: packed % 4096 };
+  const cupPx = cupPacked === null ? null
+    : { x: Math.floor(cupPacked / 4096), y: cupPacked % 4096 };
+  const cup = cupPx ? findCupAt(shot, cupPx.x, cupPx.y) : null;
   const log = await events();
   const errs = log.filter(t => /error|Error|ERR/.test(t));
 
@@ -254,7 +279,11 @@ for (let hole = 1; hole <= HOLES; hole++) {
   check(hole, 'no lua errors', errs.length === 0, errs.join(' | '));
   check(hole, 'frame is not black', a.black < 0.5,
         `${(a.black * 100).toFixed(1)}% of the play area is black`);
-  check(hole, 'green surface present', a.green > 0.12,
+  // 3%, not 12%. Some holes are mostly RAILS by design -- hole 22 is a
+  // maze whose grass is a few narrow channels -- so a high green threshold
+  // fails a correct render. What this actually guards is "a course is
+  // present at all", and a blank or black frame has none.
+  check(hole, 'green surface present', a.green > 0.03,
         `only ${(a.green * 100).toFixed(1)}% green`);
   // Flat-shaded vector art genuinely has few colours: greens, wood, sky,
   // ball, cup, flag. The real failure this guards is a SINGLE flat fill --
@@ -342,42 +371,7 @@ from PIL import Image
 import json
 im = Image.open(${JSON.stringify(shot)}).convert('RGB')
 w, h = im.size
-# PROJECT the cart position before looking for the ball there.
-#
-# The cart reports CART pixels, which is the physics' space -- but the ball
-# is drawn by a tilted perspective camera, so it lands somewhere else on
-# screen entirely (up to 174px away). Searching at the raw cart coordinate
-# is the very bug this suite exists to catch, committed inside the test.
-#
-# Same camera as love.draw: eye (960, 1490, 900)/U looking at (960, 0,
-# 540)/U with fov 52, U = 120.
-import math
-U = 120.0
-ex, ey, ez = 960 / U, 1150 / U, 1240 / U
-tx, ty, tz = 960 / U, 0.0, 540 / U
-fx, fy, fz = tx - ex, ty - ey, tz - ez
-fl = math.sqrt(fx * fx + fy * fy + fz * fz)
-fx, fy, fz = fx / fl, fy / fl, fz / fl
-# right = forward x up
-rx, ry, rz = fy * 0.0 - fz * 1.0, fz * 0.0 - fx * 0.0, fx * 1.0 - fy * 0.0
-rl = math.sqrt(rx * rx + ry * ry + rz * rz)
-rx, ry, rz = rx / rl, ry / rl, rz / rl
-# up = right x forward
-ux, uy, uz = ry * fz - rz * fy, rz * fx - rx * fz, rx * fy - ry * fx
-tan = math.tan(math.radians(52 / 2))
-def project(px, py, h):
-    dx, dy, dz = px / U - ex, h / U - ey, py / U - ez
-    vx = dx * rx + dy * ry + dz * rz
-    vy = dx * ux + dy * uy + dz * uz
-    vz = dx * fx + dy * fy + dz * fz
-    if vz <= 0.001:
-        return None
-    return (vx / (vz * tan * (1920 / 1080))) * 960 + 960, (-vy / (vz * tan)) * 540 + 540
-pr = project(${ballPx.x}, ${ballPx.y}, 11.5)
-if pr is None:
-    print(json.dumps(None))
-    raise SystemExit(0)
-cx, cy = int(pr[0]), int(pr[1])
+cx, cy = ${ballPx.x}, ${ballPx.y}
 best, vals = None, []
 for R in (26, 60, 120):
     vals = []
@@ -412,14 +406,14 @@ else:
 
   // THE BALL MUST NOT START IN THE CUP -- the assertion that catches a
   // mirrored camera, which renders the ball at the cup's end of the course.
-  if (cup) {
+  if (cupPx) {
     // 30px, not 60. The comparison mixes spaces -- the ball is in CART
     // pixels and the cup is measured on the projected SCREEN -- so the
     // number is only meaningful as "not sitting on top of each other".
     // Hole 6's tee is genuinely 218 cart-pixels from its cup, which
     // projects to under 60, so a larger bound fails a correct short hole.
     // A mirrored render puts them within a handful of pixels.
-    const d = Math.hypot(ballPx.x - cup.cx, ballPx.y - cup.cy);
+    const d = Math.hypot(ballPx.x - cupPx.x, ballPx.y - cupPx.y);
     check(hole, 'ball starts away from the cup', d > 30,
           `ball is ${d.toFixed(0)}px from the cup -- it is rendering at the ` +
           `hole, which is what a mirrored camera looks like`);

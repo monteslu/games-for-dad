@@ -360,15 +360,6 @@ function love.update(dt)
   course.update(dt)
   fx.update(dt)
 
-  -- Publish the ball's position for the test harness. Finding it by
-  -- pixel-hunting is genuinely hard now that the rails are a pale checker
-  -- and the ball is tinted: a colour search merges the two, and every
-  -- refinement of the heuristic was another way to be confidently wrong
-  -- about where the ball was. The cart knows, so it says.
-  do
-    local bx, by = ballPos()
-    love.debugValue(0, math.floor(bx) * 2048 + math.floor(by))
-  end
 
   if state == "rolling" then
     local vx, _, vz = b3.body_velocity(ballBody)
@@ -551,7 +542,17 @@ function love.draw()
   -- its width with room for the rough. The eye sits in front of the green
   -- and aims at its middle, which leans the view just enough for the rails
   -- to show their side faces without skewing the course into a trapezoid.
-  local cx, cy = 960, 540
+  -- FRAME THE HOLE THIS HOLE ACTUALLY IS.
+  --
+  -- The slab is sized to each layout's own rails now, so a fixed camera
+  -- leaves compact holes as a postage stamp in the middle of the sky --
+  -- hole 17 rendered perfectly and filled 2% of the frame. The eye tracks
+  -- the slab's centre and pulls back in proportion to its size.
+  local hx0 = (holeInfo and holeInfo.cx) or 960
+  local hy0 = (holeInfo and holeInfo.cy) or 540
+  local hw = (holeInfo and holeInfo.w) or 1500
+  local hh = (holeInfo and holeInfo.h) or 1000
+  local cx, cy = hx0, hy0
   -- A LOWER, MORE TILTED EYE.
   --
   -- At 1490 up and 360 back the view was nearly straight down: measured,
@@ -562,11 +563,53 @@ function love.draw()
   -- the whole 1500x1000 layout still fits between the HUD bands. 980/900
   -- tilts far enough to cut the far edge and let the near rough dominate;
   -- 1150/700 keeps an 8px band with the course centred.
-  local eye = dream.vec3(cx / U, 1150 / U, (cy + 700) / U)
+  -- Height from whichever axis binds: width against the 16:9 frame, or
+  -- depth against the vertical fov. The 0.62/0.86 factors leave a margin
+  -- so the rough and the pin stay inside the HUD bands.
+  local tanv = math.tan(math.rad(52 / 2))
+  local needW = (hw * 0.52) / (tanv * (1920 / 1080))
+  local needH = (hh * 0.70) / tanv
+  local eyeH = math.max(needW, needH)
+  -- 0.40, not 0.61. A 52px rail hides ground BEYOND its own footprint in
+  -- proportion to the tilt -- 32px at 0.61, and hole 22's cup sits just
+  -- 26px from a rail, so the hole rendered as a half-disc with its lower
+  -- half swallowed by the wall. At 0.40 a rail hides 21px and the cup
+  -- clears it, while the view still leans enough to show the rails' sides.
+  local eye = dream.vec3(cx / U, eyeH / U, (cy + eyeH * 0.40) / U)
   local tgt = dream.vec3(cx / U, 0, cy / U)
   local cam = dream:newCamera(camWorld(eye, tgt))
   cam:setFov(52)
   setProjection(eye, tgt, 52)
+  -- The harness needs the SAME camera to know where the ball lands on
+  -- screen, and the camera is per-hole now. Rather than have it hardcode
+  -- an eye height that silently goes stale, the projected BALL POSITION is
+  -- published directly -- the projection is what the test actually wanted,
+  -- and this way it can never disagree with what was drawn.
+  do
+    local bx, by = ballPos()
+    local psx, psy = toScreen(bx, by, BALL_R)
+    psx = math.max(0, math.min(4095, math.floor(psx)))
+    psy = math.max(0, math.min(4095, math.floor(psy)))
+    -- The ball on even frames, the CUP on odd ones, through the one slot.
+    --
+    -- Two positions will not fit in a single i32 at any useful resolution
+    -- (4018597766 against a 2147483647 ceiling even at 8px granularity),
+    -- and aux cannot be used because the cart READS it as the harness's
+    -- hole-jump channel. Alternating is enough: the harness steps many
+    -- frames before it samples, so both values are always fresh.
+    --
+    -- The cup needs publishing at all because pixel-hunting it stopped
+    -- working once the rails cast shadows: on a maze hole like 22 the
+    -- largest dark blob is an 871px rail shadow, not the hole.
+    if (frameNo % 2) == 0 then
+      love.debugValue(0, psx * 4096 + psy)
+    elseif holeInfo and holeInfo.goal then
+      local gsx, gsy = toScreen(holeInfo.goal.x, holeInfo.goal.y, 0)
+      gsx = math.max(0, math.min(4095, math.floor(gsx)))
+      gsy = math.max(0, math.min(4095, math.floor(gsy)))
+      love.debugValue(0, -(gsx * 4096 + gsy) - 1)
+    end
+  end
 
   dream:prepare()
   -- LIGHTS GO HERE, NOT IN love.load: prepare() clears the light list every

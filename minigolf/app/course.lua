@@ -94,6 +94,8 @@ function M.initMaterials()
 
   mat.turf    = texMat("turf",  tex.turf,  0.95)
   mat.edge    = texMat("edge",  tex.edge,  0.7)
+
+
   mat.stone   = texMat("stone", tex.stone, 0.85)
   mat.sand    = texMat("sand",  tex.sand,  1.0)
   mat.water   = texMat("water", tex.water, 0.15, 0.2)
@@ -177,6 +179,10 @@ local function newBatch(material)
   return b
 end
 
+-- All six faces. Dropping "bottom" as an optimisation looks safe from an
+-- overhead camera and is not: finishBatch skips a direction with no
+-- geometry, so removing it from this list left the green's slab without
+-- the face it actually draws through and the whole course vanished.
 local BOX_DIRS = {
   { "top",    { 0, 1, 0} }, { "bottom", { 0,-1, 0} },
   { "south",  { 0, 0, 1} }, { "north",  { 0, 0,-1} },
@@ -187,13 +193,20 @@ local function batchBox(batch, cx, cy, cz, hx, hy, hz, uvScale)
   local s = uvScale or (1 / 128)
   local x, y, z = cx / U, cy / U, cz / U
   local ax, ay, az = hx / U, hy / U, hz / U
+  -- Corner order DERIVED from each face's normal so every face winds the
+  -- same way as seen from outside the box, rather than being hand-listed
+  -- per face. Two of the hand-written ones (east and bottom) were wound
+  -- backwards, which pointed those faces INTO the box: the renderer drew
+  -- their back sides and they showed through as grey triangles spiking out
+  -- of every corner. Hand-checking six faces is exactly the job to give to
+  -- the arithmetic instead.
   local corners = {
-    top    = { {-ax, ay,-az}, { ax, ay,-az}, { ax, ay, az}, {-ax, ay, az}, hx, hz },
-    bottom = { {-ax,-ay, az}, { ax,-ay, az}, { ax,-ay,-az}, {-ax,-ay,-az}, hx, hz },
-    south  = { {-ax,-ay, az}, { ax,-ay, az}, { ax, ay, az}, {-ax, ay, az}, hx, hy },
-    north  = { { ax,-ay,-az}, {-ax,-ay,-az}, {-ax, ay,-az}, { ax, ay,-az}, hx, hy },
-    east   = { { ax,-ay, az}, { ax,-ay,-az}, { ax, ay,-az}, { ax, ay, az}, hz, hy },
-    west   = { {-ax,-ay,-az}, {-ax,-ay, az}, {-ax, ay, az}, {-ax, ay,-az}, hz, hy },
+    top    = { {-ax, ay, az}, {-ax, ay,-az}, { ax, ay,-az}, { ax, ay, az}, hx, hz },
+    bottom = { {-ax,-ay,-az}, {-ax,-ay, az}, { ax,-ay, az}, { ax,-ay,-az}, hx, hz },
+    south  = { {-ax,-ay, az}, {-ax, ay, az}, { ax, ay, az}, { ax,-ay, az}, hx, hy },
+    north  = { {-ax, ay,-az}, {-ax,-ay,-az}, { ax,-ay,-az}, { ax, ay,-az}, hx, hy },
+    east   = { { ax,-ay,-az}, { ax,-ay, az}, { ax, ay, az}, { ax, ay,-az}, hz, hy },
+    west   = { {-ax,-ay, az}, {-ax,-ay,-az}, {-ax, ay,-az}, {-ax, ay, az}, hz, hy },
   }
   for _, d in ipairs(BOX_DIRS) do
     local dir, n = d[1], d[2]
@@ -485,8 +498,47 @@ function M.build(world, level)
   spinners = {}
   rails = {}
 
-  local X0, Y0 = 210, 40
-  local W, H = 1500, 1000
+  -- THE SLAB IS SIZED TO THE HOLE'S OWN RAILS, not to a fixed rectangle.
+  --
+  -- It used to be a hardcoded 1500x1000 while the rails sit wherever each
+  -- layout puts them -- on hole 1 that left 156px of bare green sticking
+  -- out past the top and bottom rails, so the course looked like a green
+  -- rug with a grey frame lying loose on top of it. Measuring the rails
+  -- and adding a small verge makes the green END where the course does.
+  local minx, maxx, miny, maxy = math.huge, -math.huge, math.huge, -math.huge
+  for _, e in ipairs(level.entities) do
+    -- RAILS ONLY. Sizing from every entity lets a boost pad or a water
+    -- hazard that sits outside the playing area inflate the slab, and the
+    -- camera then frames mostly empty grass -- holes 21 and 22 have rails
+    -- spanning a near-full 1472x820 and still rendered as a postage stamp.
+    if e.id ~= "ball" and e.id ~= "goal"
+       and not (e.water or e.sand or e.impulse or e.sensor) then
+      local ex1, ex2, ey1, ey2
+      if e.kind == "rect" then
+        ex1, ex2, ey1, ey2 = e.x - e.hw, e.x + e.hw, e.y - e.hh, e.y + e.hh
+      elseif e.kind == "circle" then
+        ex1, ex2, ey1, ey2 = e.x - e.r, e.x + e.r, e.y - e.r, e.y + e.r
+      elseif e.kind == "poly" and e.points then
+        ex1, ex2, ey1, ey2 = math.huge, -math.huge, math.huge, -math.huge
+        for i = 1, #e.points / 2 do
+          local px, pz = e.x + e.points[i * 2 - 1], e.y + e.points[i * 2]
+          ex1 = math.min(ex1, px); ex2 = math.max(ex2, px)
+          ey1 = math.min(ey1, pz); ey2 = math.max(ey2, pz)
+        end
+      end
+      if ex1 then
+        minx = math.min(minx, ex1); maxx = math.max(maxx, ex2)
+        miny = math.min(miny, ey1); maxy = math.max(maxy, ey2)
+      end
+    end
+  end
+  if minx > maxx then minx, maxx, miny, maxy = 210, 1710, 40, 1040 end
+
+  -- A narrow verge of green outside the rails, the way a real course has a
+  -- lip rather than the turf being cut flush with the timber.
+  local VERGE = 26
+  local X0, Y0 = minx - VERGE, miny - VERGE
+  local W, H = (maxx - minx) + VERGE * 2, (maxy - miny) + VERGE * 2
   local cx, cy = X0 + W / 2, Y0 + H / 2
 
   -- THE GREEN. A slab with its top face at y=0, so every height in the
@@ -705,7 +757,9 @@ function M.build(world, level)
     ballMesh = buildSphere(mat.ball, tex.ball, BALL_R, 18)
   end
 
-  return { start = start, goal = goal }
+  return { start = start, goal = goal,
+           x0 = X0, y0 = Y0, w = W, h = H,
+           cx = cx, cy = cy }
 end
 
 -- A flat textured quad lying on the green, used for contact shadows.
