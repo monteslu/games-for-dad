@@ -54,14 +54,35 @@ function M.initMaterials()
   -- through the material, but this engine's 3D meshes carry their own
   -- texture and the material's sampler is never read. Both are set, and
   -- buildMesh() below does the mesh half.
-  local function texMat(name, tx, rough, metal)
+  -- EMISSION IS AMBIENT, NOT THE WHOLE PICTURE.
+  --
+  -- The texture has to go through emission because this engine does not
+  -- wire the albedo sampler for the lit mesh format. But at an emission
+  -- factor of 1.0 every surface emits its texture at FULL strength, which
+  -- means it is fullbright: the lights add almost nothing on top, every
+  -- face lands at the same value regardless of which way it points, and
+  -- the whole course reads flat and lifeless however good the lighting
+  -- rig is.
+  --
+  -- So emission carries about a third -- Neverputt's own ambient is 0.7
+  -- against a 1.0 diffuse, a similar ratio -- and the directional lights
+  -- supply the rest. That is what makes a rail's top face brighter than
+  -- its sides, which is what makes it look like a solid object.
+  local function texMat(name, tx, rough, metal, emit)
     local m = dream:newMaterial(name)
     m:setColor(1, 1, 1, 1)
     m:setEmissionTexture(tx)
     -- emission = texel * factor + colour, so the COLOUR stays black or it
     -- is added to every texel and washes the texture out to white
     m:setEmission(0, 0, 0)
-    m:setEmissionFactor(1, 1, 1)
+    -- FULL emission. With no runtime lighting on this path, emission is
+    -- the ONLY thing that lights the scene -- dropping it to 0.02 to "let
+    -- the lights do the work" turned the whole course black, because there
+    -- are no lights. The per-face light levels are baked into the textures
+    -- themselves (art.lua), so full strength here is correct.
+    local e = emit or 1.0
+    m:setEmissionFactor(e, e, e)
+    m:setAlbedoTexture(tx)
     m:setRoughness(rough or 0.9)
     m:setMetallic(metal or 0)
     return m
@@ -102,6 +123,179 @@ end
 
 -- A box in PIXEL space, converted to world units on the way in. uvScale
 -- ties texture repeats to real size, so a long rail does not smear.
+-- `texture` may be a single image or a table of per-face-direction images
+-- from art.lit. With a table, each of the six faces gets the variant baked
+-- for the direction it points -- which is the only way this engine shades
+-- anything, since its 3D path has no runtime lighting.
+--
+-- A mesh carries ONE texture, so a multi-face box is built as six separate
+-- meshes. That is six draw calls where one would do, and it is what buys
+-- the shading: a rail whose top is bright and whose sides fall away in two
+-- different hues reads as a solid object instead of a flat sticker.
+-- BATCHED, LIT BOXES: one mesh per FACE DIRECTION for the whole hole, not
+-- six meshes per box.
+--
+-- This engine has no runtime 3D lighting (render3d_gl.c: "no camera, no
+-- matrix stack, no lighting"), so shading has to be baked into textures --
+-- one variant per direction a face can point. The obvious implementation,
+-- six meshes per box, costs six slots per rail: measured across the 22
+-- holes that puts thirteen of them over the renderer's 64-mesh limit, with
+-- hole 14 alone wanting 169. Overflowing does not error, it silently drops
+-- geometry, which is how the sky went black.
+--
+-- So every box of a given material accumulates into six shared meshes, one
+-- per direction. A hole costs six slots for all its rails together however
+-- many rails it has, and the shading is identical.
+local function newBatch(material)
+  local b = { material = material, dirs = {} }
+  for _, dir in ipairs({ "top", "bottom", "north", "south", "east", "west" }) do
+    local m = dream:newMesh(material)
+    b.dirs[dir] = {
+      mesh = m,
+      v = m:getOrCreateBuffer("vertices"),
+      n = m:getOrCreateBuffer("normals"),
+      t = m:getOrCreateBuffer("texCoords"),
+      f = m:getOrCreateBuffer("faces"),
+      count = 0,
+    }
+  end
+  return b
+end
+
+local BOX_DIRS = {
+  { "top",    { 0, 1, 0} }, { "bottom", { 0,-1, 0} },
+  { "south",  { 0, 0, 1} }, { "north",  { 0, 0,-1} },
+  { "east",   { 1, 0, 0} }, { "west",   {-1, 0, 0} },
+}
+
+local function batchBox(batch, cx, cy, cz, hx, hy, hz, uvScale)
+  local s = uvScale or (1 / 128)
+  local x, y, z = cx / U, cy / U, cz / U
+  local ax, ay, az = hx / U, hy / U, hz / U
+  local corners = {
+    top    = { {-ax, ay,-az}, { ax, ay,-az}, { ax, ay, az}, {-ax, ay, az}, hx, hz },
+    bottom = { {-ax,-ay, az}, { ax,-ay, az}, { ax,-ay,-az}, {-ax,-ay,-az}, hx, hz },
+    south  = { {-ax,-ay, az}, { ax,-ay, az}, { ax, ay, az}, {-ax, ay, az}, hx, hy },
+    north  = { { ax,-ay,-az}, {-ax,-ay,-az}, {-ax, ay,-az}, { ax, ay,-az}, hx, hy },
+    east   = { { ax,-ay, az}, { ax,-ay,-az}, { ax, ay,-az}, { ax, ay, az}, hz, hy },
+    west   = { {-ax,-ay,-az}, {-ax,-ay, az}, {-ax, ay, az}, {-ax, ay,-az}, hz, hy },
+  }
+  for _, d in ipairs(BOX_DIRS) do
+    local dir, n = d[1], d[2]
+    local c = corners[dir]
+    local g = batch.dirs[dir]
+    local base = g.count * 4
+    local su, sv = c[5] * 2 * s, c[6] * 2 * s
+    local uv = { { 0, 0 }, { su, 0 }, { su, sv }, { 0, sv } }
+    for i = 1, 4 do
+      g.v:append({ x + c[i][1], y + c[i][2], z + c[i][3] })
+      g.n:append({ n[1], n[2], n[3] })
+      g.t:append(uv[i])
+    end
+    g.f:append({ base + 1, base + 2, base + 3 })
+    g.f:append({ base + 1, base + 3, base + 4 })
+    g.count = g.count + 1
+  end
+end
+
+-- Finish a batch: six meshes, each with its direction's baked-light texture.
+-- Empty directions are skipped so an unused batch costs nothing.
+-- A FLAT batch: every horizontal surface of one material in a single mesh.
+-- Water, sand and the impulse pads are all flat and all face up, so they
+-- need one mesh each for the whole hole rather than one per entity. Hole 18
+-- has enough of them to want 94 meshes against a 64-slot renderer.
+local function newFlat(material)
+  local m = dream:newMesh(material)
+  return {
+    mesh = m,
+    v = m:getOrCreateBuffer("vertices"),
+    n = m:getOrCreateBuffer("normals"),
+    t = m:getOrCreateBuffer("texCoords"),
+    f = m:getOrCreateBuffer("faces"),
+    count = 0,
+  }
+end
+
+local function flatPoly(fb, pts, py, cx, cz, uvScale)
+  local s = uvScale or (1 / 128)
+  local n = #pts / 2
+  local base = fb.count
+  for i = 1, n do
+    local px, pz = pts[i * 2 - 1], pts[i * 2]
+    fb.v:append({ (cx + px) / U, py / U, (cz + pz) / U })
+    fb.n:append({ 0, 1, 0 })
+    fb.t:append({ px * s, pz * s })
+  end
+  for i = 2, n - 1 do
+    fb.f:append({ base + 1, base + i, base + i + 1 })
+  end
+  fb.count = base + n
+end
+
+local function flatRect(fb, cx, cy, cz, hw, hh, uvScale)
+  flatPoly(fb, { -hw, -hh, hw, -hh, hw, hh, -hw, hh }, cy, cx, cz, uvScale)
+end
+
+-- Bumpers batched into ONE mesh. Hole 15 has 47 circular bumpers, and a
+-- sphere apiece is 47 slots on top of the ~27 the rest of the hole needs --
+-- 74 against a 64-slot renderer, which is why that hole failed to build
+-- while every hole before it was fine. It was never a leak: the live slot
+-- count cycles and resets cleanly, one hole simply wanted more at once.
+local function batchSphere(fb, cx, cy, cz, r, seg)
+  seg = seg or 8
+  local base = fb.count
+  local rr = r / U
+  for i = 0, seg do
+    local phi = math.pi * i / seg
+    for j = 0, seg do
+      local th = 2 * math.pi * j / seg
+      local x = math.sin(phi) * math.cos(th)
+      local y = math.cos(phi)
+      local z = math.sin(phi) * math.sin(th)
+      fb.v:append({ cx / U + x * rr, cy / U + y * rr, cz / U + z * rr })
+      fb.n:append({ x, y, z })
+      fb.t:append({ j / seg, i / seg })
+    end
+  end
+  for i = 0, seg - 1 do
+    for j = 0, seg - 1 do
+      local a = base + i * (seg + 1) + j + 1
+      local b = a + seg + 1
+      fb.f:append({ a, b, a + 1 })
+      fb.f:append({ a + 1, b, b + 1 })
+    end
+  end
+  fb.count = base + (seg + 1) * (seg + 1)
+end
+
+local function finishFlat(fb, texture, out)
+  if fb.count > 0 then
+    out[#out + 1] = { finish(fb.mesh, texture), 0, 0, 0 }
+  elseif fb.mesh and fb.mesh.mesh and fb.mesh.mesh.release then
+    fb.mesh.mesh:release()
+    fb.mesh.mesh = nil
+  end
+end
+
+local function finishBatch(batch, textures, out)
+  for dir, g in pairs(batch.dirs) do
+    if g.count > 0 then
+      out[#out + 1] = { finish(g.mesh, textures[dir]), 0, 0, 0 }
+    else
+      -- RELEASE the directions that took no geometry. newBatch creates all
+      -- six up front, and an empty one still holds a renderer slot: only
+      -- the meshes that reach `out` are freed on the next rebuild, so the
+      -- unused ones leak until the 64 slots run out and a mid-game hole
+      -- fails to build. That is the same crash as before, arriving by a
+      -- different route.
+      if g.mesh and g.mesh.mesh and g.mesh.mesh.release then
+        g.mesh.mesh:release()
+        g.mesh.mesh = nil
+      end
+    end
+  end
+end
+
 local function buildBox(material, texture, cx, cy, cz, hx, hy, hz, uvScale)
   local m = dream:newMesh(material)
   local mv = m:getOrCreateBuffer("vertices")
@@ -240,13 +434,20 @@ function M.build(world, level)
 
   -- THE GREEN. A slab with its top face at y=0, so every height in the
   -- level is measured from the putting surface.
-  meshes[#meshes + 1] = { buildBox(mat.turf, tex.turf, cx, -FLOOR_T / 2, cy,
-                                   W / 2, FLOOR_T / 2, H / 2, 1 / 96), 0, 0, 0 }
+  local turfBatch = newBatch(mat.turf)
+  local stoneBatch = newBatch(mat.stone)
+  local edgeBatch = newBatch(mat.edge)
+  local waterFlat = newFlat(mat.water)
+  local sandFlat  = newFlat(mat.sand)
+  local zoneFlat  = newFlat(mat.zone)
+  local edgeTopFlat = newFlat(mat.edge)
+  local bumperFlat = newFlat(mat.edge)
+  batchBox(turfBatch, cx, -FLOOR_T / 2, cy, W / 2, FLOOR_T / 2, H / 2, 1 / 96)
   staticBox(world, cx, -FLOOR_T / 2, cy, W / 2, FLOOR_T / 2, H / 2, 0.85, 0.2)
 
   -- the stone apron the green sits on, purely to frame it
-  meshes[#meshes + 1] = { buildBox(mat.stone, tex.stone, cx, -FLOOR_T - 22, cy,
-                                   W / 2 + 150, 22, H / 2 + 120, 1 / 128), 0, 0, 0 }
+  batchBox(stoneBatch, cx, -FLOOR_T - 22, cy,
+           W / 2 + 150, 22, H / 2 + 120, 1 / 128)
 
   local goal, start
   for _, e in ipairs(level.entities) do
@@ -259,29 +460,23 @@ function M.build(world, level)
     elseif e.water then
       -- Water sits BELOW the surface and is a trigger, not a wall.
       if e.kind == "rect" then
-        meshes[#meshes + 1] = { buildBox(mat.water, tex.water, e.x, -6, e.y,
-                                         e.hw, 2, e.hh, 1 / 160), 0, 0, 0 }
+        flatRect(waterFlat, e.x, -6, e.y, e.hw, e.hh, 1 / 160)
       elseif e.kind == "poly" then
-        meshes[#meshes + 1] = { buildPoly(mat.water, tex.water, e.points, -6,
-                                          e.x, e.y, 1 / 160), 0, 0, 0 }
+        flatPoly(waterFlat, e.points, -6, e.x, e.y, 1 / 160)
       end
 
     elseif e.sand then
       if e.kind == "rect" then
-        meshes[#meshes + 1] = { buildBox(mat.sand, tex.sand, e.x, -3, e.y,
-                                         e.hw, 2, e.hh, 1 / 112), 0, 0, 0 }
+        flatRect(sandFlat, e.x, -3, e.y, e.hw, e.hh, 1 / 112)
       elseif e.kind == "poly" then
-        meshes[#meshes + 1] = { buildPoly(mat.sand, tex.sand, e.points, -3,
-                                          e.x, e.y, 1 / 112), 0, 0, 0 }
+        flatPoly(sandFlat, e.points, -3, e.x, e.y, 1 / 112)
       end
 
     elseif e.impulse then
       if e.kind == "rect" then
-        meshes[#meshes + 1] = { buildBox(mat.zone, tex.zone, e.x, 1.5, e.y,
-                                         e.hw, 1, e.hh, 1 / 64), 0, 0, 0 }
+        flatRect(zoneFlat, e.x, 1.5, e.y, e.hw, e.hh, 1 / 64)
       elseif e.kind == "poly" then
-        meshes[#meshes + 1] = { buildPoly(mat.zone, tex.zone, e.points, 2,
-                                          e.x, e.y, 1 / 64), 0, 0, 0 }
+        flatPoly(zoneFlat, e.points, 2, e.x, e.y, 1 / 64)
       end
 
     elseif not e.sensor then
@@ -290,8 +485,8 @@ function M.build(world, level)
         -- 1/104 makes one checker square about 26px, so the pattern is
         -- the same physical size on every rail rather than repeating more
         -- times the longer the rail is.
-        meshes[#meshes + 1] = { buildBox(mat.edge, tex.edge, e.x, WALL_H / 2, e.y,
-                                         e.hw, WALL_H / 2, e.hh, 1 / 104), 0, 0, 0 }
+        batchBox(edgeBatch, e.x, WALL_H / 2, e.y,
+                 e.hw, WALL_H / 2, e.hh, 1 / 104)
         staticBox(world, e.x, WALL_H / 2, e.y, e.hw, WALL_H / 2, e.hh,
                   0.5, e.restitution or 0.55)
       elseif e.kind == "circle" then
@@ -300,8 +495,7 @@ function M.build(world, level)
         -- mesh here already accounts for by baking absolute coordinates
         -- into its vertices -- so a sphere placed through them is offset
         -- twice and ends up off the course, hanging in the sky.
-        meshes[#meshes + 1] = { buildSphere(mat.edge, tex.edge, e.r, 12),
-                                e.x / U, WALL_H / 2 / U, e.y / U }
+        batchSphere(bumperFlat, e.x, WALL_H / 2, e.y, e.r, 8)
         local b = b3.body_new(world, e.x, WALL_H / 2, e.y, 0)
         local s = b3.shape_sphere(b, e.r)
         b3.shape_set_material(s, 0.5, e.restitution or 0.55)
@@ -310,8 +504,7 @@ function M.build(world, level)
         -- A polygon rail becomes a drawn cap plus a box hull for collision:
         -- Box3D has no convex-hull-from-points shape, and the layouts'
         -- polygons are all small wedges where a tight box is honest enough.
-        meshes[#meshes + 1] = { buildPoly(mat.edge, tex.edge, e.points, WALL_H,
-                                          e.x, e.y, 1 / 104), 0, 0, 0 }
+        flatPoly(edgeTopFlat, e.points, WALL_H, e.x, e.y, 1 / 104)
         local minx, maxx, minz, maxz = math.huge, -math.huge, math.huge, -math.huge
         for i = 1, #e.points / 2 do
           local px, pz = e.points[i * 2 - 1], e.points[i * 2]
@@ -324,6 +517,17 @@ function M.build(world, level)
       end
     end
   end
+
+  -- Flush the batched geometry: six meshes for the green, six for the
+  -- apron, six for every rail in the hole put together.
+  finishBatch(turfBatch, tex.lit.turf, meshes)
+  finishBatch(stoneBatch, tex.lit.stone, meshes)
+  finishBatch(edgeBatch, tex.lit.edge, meshes)
+  finishFlat(waterFlat, tex.lit.water.top, meshes)
+  finishFlat(sandFlat, tex.lit.sand.top, meshes)
+  finishFlat(zoneFlat, tex.lit.zone.top, meshes)
+  finishFlat(edgeTopFlat, tex.lit.edge.top, meshes)
+  finishFlat(bumperFlat, tex.lit.edge.top, meshes)
 
   -- THE CUP, drawn last so it sits over the green rather than under it.
   if goal then

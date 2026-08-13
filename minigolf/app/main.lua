@@ -253,7 +253,31 @@ function love.load()
   -- direct too.
   dream.canvases:setMode("direct")
   dream:init()
-  dream:setSky({ 0.46, 0.66, 0.88 })
+  -- THE SKY IS A FUNCTION, not a colour.
+  --
+  -- Passed a colour, 3DreamEngine clears to it inside its own push/pop with
+  -- its canvas bound -- and on this engine's direct path that clear never
+  -- reaches the screen, so the sky came out black however it was set. A
+  -- clear in love.draw does not survive either: dream:present() wipes the
+  -- frame (clearing to bright red proves it -- the corner still comes back
+  -- black).
+  --
+  -- A function sky is called at the right point in the render pass, with
+  -- the screen bound, so drawing here actually lands. A vertical gradient
+  -- reads as a horizon and gives the course something to sit against.
+  dream:setSky(function()
+    local g = love.graphics
+    g.setDepthMode()
+    local BANDS = 32
+    for i = 0, BANDS - 1 do
+      local t = i / (BANDS - 1)
+      -- deeper blue overhead, paler toward the horizon, which is what
+      -- makes a flat fill read as sky rather than as a backdrop
+      g.setColor(0.30 + t * 0.34, 0.52 + t * 0.30, 0.82 + t * 0.12)
+      g.rectangle("fill", 0, i * (1080 / BANDS), 1920, 1080 / BANDS + 1)
+    end
+    g.setColor(1, 1, 1, 1)
+  end)
 
   -- The metre scale must be set BEFORE the world exists: every length that
   -- follows is converted through it.
@@ -525,14 +549,24 @@ function love.draw()
   -- LIGHTS GO HERE, NOT IN love.load: prepare() clears the light list every
   -- frame, so anything registered at load time is wiped before the first
   -- draw and the whole scene renders unlit.
-  dream:addNewLight("point", dream.vec3(cx / U - 3.4, 7.6, cy / U - 2.6),
-                    dream.vec3(1.0, 0.97, 0.90), 90)
-  dream:addNewLight("point", dream.vec3(cx / U + 4.4, 5.4, cy / U + 3.4),
-                    dream.vec3(0.58, 0.70, 0.95), 34)
-
+  --
+  -- NO LIGHTS ARE REGISTERED, deliberately.
+  --
+  -- This engine's 3D path has no runtime lighting -- render3d_gl.c says so
+  -- outright ("no camera, no matrix stack, no lighting") and it is
+  -- provable: forcing 3DreamEngine's fragment shader to output solid
+  -- magenta changes nothing on screen, because its shader never binds
+  -- here. Lights, emission factors and albedo textures are all inert.
+  --
+  -- So the light lives in the TEXTURES instead (art.lua bakes Neverputt's
+  -- two-sun rig into one variant per face direction), and registering
+  -- lights here would be decoration that costs a shadow pass. Worse, a
+  -- "sun" light made dream:present() clear the frame to black and took the
+  -- sky with it.
   course.draw()
   dream:draw(course.ballMesh(), ballMatrix())
   dream:present(cam)
+
 
   -- ── 2D overlays ─────────────────────────────────────────────────────
   love.graphics.setDepthMode()

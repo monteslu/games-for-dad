@@ -60,20 +60,76 @@ local function image(size, fn)
   return img
 end
 
+-- ── BAKED LIGHTING ────────────────────────────────────────────────────
+--
+-- THIS ENGINE HAS NO RUNTIME 3D LIGHTING. render3d_gl.c says so in its
+-- header -- "no camera, no matrix stack, no lighting" -- and it is not an
+-- oversight: it exposes the GPU seam LOVE exposes and leaves the rest to
+-- the cart. 3DreamEngine's lit shader never binds on this path, which is
+-- provable: forcing its fragment output to solid magenta changes nothing
+-- on screen. Lights, emission factors and albedo textures are all inert.
+--
+-- So the light has to be IN THE TEXTURE, which is exactly what Eight Ball
+-- does ("the shading that makes these surfaces read as surfaces is baked
+-- into the textures"). Every surface here therefore comes in several
+-- versions, one per face direction, each pre-shaded for how much light a
+-- face pointing that way would receive.
+--
+-- The rig is Neverputt's, from its own data/lights.txt and geom.c:
+--   * two DIRECTIONAL lights at opposite high corners, (-8,+32,-8) and
+--     (+8,+32,+8), so shading depends only on facing and not on where a
+--     surface sits on a 1500px course
+--   * colour-opposed, 1.0/0.8/0.8 warm against 0.8/1.0/0.8 cool-green, so
+--     a rail's two sides differ in HUE as well as brightness -- which is
+--     most of what makes geometry read as solid
+--   * global ambient 0.2, so nothing goes fully black
+local SUN_A = { -8, 32, -8 }
+local SUN_B = { 8, 32, 8 }
+local COL_A = { 1.00, 0.80, 0.80 }
+local COL_B = { 0.80, 1.00, 0.80 }
+local AMBIENT = 0.42
+
+local function normalize(v)
+  local l = math.sqrt(v[1] * v[1] + v[2] * v[2] + v[3] * v[3])
+  return { v[1] / l, v[2] / l, v[3] / l }
+end
+
+-- How much light a face pointing `n` receives, per channel.
+local function shadeFor(n)
+  local a, b = normalize(SUN_A), normalize(SUN_B)
+  local da = math.max(0, n[1] * a[1] + n[2] * a[2] + n[3] * a[3])
+  local db = math.max(0, n[1] * b[1] + n[2] * b[2] + n[3] * b[3])
+  local r = AMBIENT + da * COL_A[1] * 0.72 + db * COL_B[1] * 0.72
+  local g = AMBIENT + da * COL_A[2] * 0.72 + db * COL_B[2] * 0.72
+  local bl = AMBIENT + da * COL_A[3] * 0.72 + db * COL_B[3] * 0.72
+  return r, g, bl
+end
+
+-- The six face directions a box has, plus the name each is stored under.
+M.FACES = {
+  top    = { 0, 1, 0 },
+  bottom = { 0, -1, 0 },
+  north  = { 0, 0, -1 },
+  south  = { 0, 0, 1 },
+  east   = { 1, 0, 0 },
+  west   = { -1, 0, 0 },
+}
+
 function M.makeTextures()
   local T = {}
   local S = 128
 
   -- TURF. Mown grass: fine noise for the blades, plus wide bands for the
   -- mower stripes that make a green look like a green.
-  T.turf = image(S, function(x, y, size)
+  local turfFn = function(x, y, size)
     local n = fbm(x / 6, y / 6, 11, 4)
     local fine = fbm(x / 2.2, y / 2.2, 23, 2)
     -- stripes run diagonally so they never line up with the rails
     local band = math.sin((x + y) * math.pi / 32) * 0.5 + 0.5
     local l = 0.72 + n * 0.30 + fine * 0.16 + band * 0.10
     return 0.16 * l, 0.52 * l, 0.20 * l
-  end)
+  end
+  T.turf = image(S, turfFn)
 
   -- THE WALLS ARE CONCRETE.
   --
@@ -87,43 +143,47 @@ function M.makeTextures()
   -- So: fine high-frequency grain, a barely-there mottle to break up large
   -- faces, and no repeating figure at all. A pattern on a wall reads as
   -- decoration; concrete reads as a wall.
-  T.edge = image(S, function(x, y)
+  local edgeFn = function(x, y)
     local grain = fbm(x / 1.6, y / 1.6, 37, 2)
     local mottle = fbm(x / 22, y / 22, 41, 3)
     local l = 0.94 + (grain - 0.5) * 0.10 + (mottle - 0.5) * 0.13
     -- very slightly cool, the way cast concrete photographs
     return 0.50 * l, 0.505 * l, 0.515 * l
-  end)
+  end
+  T.edge = image(S, edgeFn)
 
   -- STONE. The apron under the green.
-  T.stone = image(S, function(x, y)
+  local stoneFn = function(x, y)
     local n = fbm(x / 7, y / 7, 53, 4)
     local l = 0.62 + n * 0.42
     return 0.46 * l, 0.46 * l, 0.48 * l
-  end)
+  end
+  T.stone = image(S, stoneFn)
 
   -- SAND. Bright, warm, and finer-grained than the turf.
-  T.sand = image(S, function(x, y)
+  local sandFn = function(x, y)
     local n = fbm(x / 4, y / 4, 71, 4)
     local l = 0.78 + n * 0.34
     return 0.86 * l, 0.76 * l, 0.52 * l
-  end)
+  end
+  T.sand = image(S, sandFn)
 
   -- WATER. Broad slow ripples rather than noise, so it reads as a surface
   -- and not as static.
-  T.water = image(S, function(x, y)
+  local waterFn = function(x, y)
     local w = math.sin(x * math.pi / 21 + math.cos(y * math.pi / 33) * 1.7)
     local n = fbm(x / 9, y / 9, 89, 3)
     local l = 0.74 + w * 0.13 + n * 0.24
     return 0.10 * l, 0.34 * l, 0.66 * l
-  end)
+  end
+  T.water = image(S, waterFn)
 
   -- IMPULSE PAD. Chevrons, so the direction of the push is legible.
   -- Chevrons on GREEN, not a solid yellow field. A full-strength pad the
   -- size of a bunker dominates the hole and reads as terrain rather than
   -- as a marking painted on the turf; the arrows carry the meaning, so the
   -- ground between them stays grass.
-  T.zone = image(S, function(x, y, size)
+  local zoneFn = function(x, y, size)
     local v = ((x + math.abs(y - size / 2)) % 34) / 34
     local n = fbm(x / 6, y / 6, 11, 4)
     if v < 0.34 then
@@ -132,7 +192,8 @@ function M.makeTextures()
     end
     local l = 0.72 + n * 0.30
     return 0.16 * l, 0.52 * l, 0.20 * l
-  end)
+  end
+  T.zone = image(S, zoneFn)
 
   -- FLAG. Flat red; it is small and only needs to read as a pin.
   T.flag = image(16, function() return 0.86, 0.20, 0.22 end)
@@ -194,6 +255,33 @@ function M.makeTextures()
     end
     return r, g, b
   end)
+
+  -- ── the lit variants ────────────────────────────────────────────────
+  --
+  -- Each surface that appears on more than one face direction gets a
+  -- version per direction, pre-multiplied by that direction's light. The
+  -- ball is excluded: it is a sphere, so no single face normal describes
+  -- it, and its own texture already carries dimples and quadrants.
+  local function litVariants(name, fn, size)
+    local out = {}
+    for dir, n in pairs(M.FACES) do
+      local lr, lg, lb = shadeFor(n)
+      out[dir] = image(size or S, function(x, y, sz)
+        local r, g, b = fn(x, y, sz)
+        return math.min(1, r * lr), math.min(1, g * lg), math.min(1, b * lb)
+      end)
+    end
+    return out
+  end
+
+  T.lit = {
+    turf  = litVariants("turf", turfFn),
+    edge  = litVariants("edge", edgeFn),
+    stone = litVariants("stone", stoneFn),
+    sand  = litVariants("sand", sandFn),
+    water = litVariants("water", waterFn),
+    zone  = litVariants("zone", zoneFn),
+  }
 
   return T
 end
