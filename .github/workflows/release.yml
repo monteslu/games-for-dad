@@ -74,6 +74,12 @@ jobs:
           mkdir -p dist
           for d in */; do
             g="${d%/}"
+            # SKIP dist/ ITSELF. `for d in */` matches every directory in
+            # the repo, and once dist/ exists and holds a cart, the copy
+            # below tries to copy a file onto itself and cp exits 1 --
+            # taking the whole release with it after the first game
+            # packed successfully.
+            [ "$g" = "dist" ] && continue
             [ -f "$g/build.sh" ] && { echo "packing $g"; (cd "$g" && ./build.sh); }
             for c in "$g"/*.wasc; do [ -f "$c" ] && cp "$c" dist/; done
           done
@@ -169,6 +175,7 @@ jobs:
           first=1
           for d in */; do
             g="${d%/}"
+            [ "$g" = "dist" ] && continue     # see the carts job
             [ -f "$g/build.sh" ] && (cd "$g" && ./build.sh)
             for c in "$g"/*.wasc; do
               [ -f "$c" ] || continue
