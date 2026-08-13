@@ -157,7 +157,7 @@ local function buildLevel(n)
   -- The ball starts ON the green: its centre one radius above y=0, which
   -- is the putting surface. Dropped from higher it bounces on the tee.
   ballBody = b3.body_new(world, startX, BALL_R, startY, 2)   -- 2 = dynamic
-  ballShape = b3.shape_sphere(ballBody, BALL_R)
+  ballShape = love.physics3d.debug.sphere(ballBody, BALL_R)
   b3.shape_set_material(ballShape, FRICTION, RESTITUTION, ROLLING)
   b3.body_set_linear_damping(ballBody, LIN_DAMP)
   b3.body_set_angular_damping(ballBody, ANG_DAMP)
@@ -284,6 +284,7 @@ function love.load()
   -- follows is converted through it.
   b3.set_meter(PPM)
 
+  love.physics3d.debug.init(dream, course.U)
   course.initMaterials()
   sounds.loadAll()
   fx.init()
@@ -325,6 +326,9 @@ function love.update(dt)
       if love.pad.isDown("down")  then aimPull = math.min(MAX_PULL, aimPull + dt * 320) end
       if love.pad.isDown("up")    then aimPull = math.max(0, aimPull - dt * 320) end
       if edges.a or edges.b then strike() end
+      -- Y toggles the physics view: the bodies as the solver has them,
+      -- instead of the art that is supposed to represent them.
+      if edges.y then love.physics3d.debug.toggle() end
     end
 
     -- Touch/mouse: the drag is measured from WHERE THE FINGER WENT DOWN,

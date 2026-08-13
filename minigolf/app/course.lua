@@ -20,6 +20,10 @@
 
 local dream = require("3DreamEngine.init")
 local art = require("art")
+-- The engine's Box3D default renderer: shapes made through it carry a
+-- mesh built from their own dimensions, so the debug view can never
+-- disagree with the simulation.
+local dbg = love.physics3d.debug
 
 local M = {}
 
@@ -465,7 +469,18 @@ local meshes = {}          -- { mesh, x, y, z }
 local spinners = {}        -- moving obstacles, rotated every frame
 local rails = {}           -- rail footprints, for the 2D contact shadows
 local ballMesh
-local bodies = {}          -- every static body, freed on rebuild
+-- Every collision body, WITH the shape it was given. This is what the
+-- debug renderer draws: a wireframe straight from the physics, so a mesh
+-- that disagrees with the body it represents is visible in one frame
+-- instead of being inferred from a screenshot.
+--
+-- Working without this is what made the last several rounds so slow. A
+-- bumper placed through the recentring helpers while every other mesh
+-- baked absolute coordinates ended up off the course entirely; polygon
+-- rails drew a flat cap while colliding as a full box hull, which is an
+-- invisible wall by definition. Both are obvious the moment the bodies are
+-- drawn, and neither was obvious from pixels.
+local bodies = {}
 
 -- Frees the previous hole. The renderer has 64 mesh slots and a hole uses
 -- a dozen, so without this the sixth hole fails to build one and the cart
@@ -485,15 +500,16 @@ end
 -- Body type is a NUMBER in this API: 0 static, 1 kinematic, 2 dynamic.
 local function staticBox(world, cx, cy, cz, hx, hy, hz, friction, restitution)
   local b = b3.body_new(world, cx, cy, cz, 0)
-  local s = b3.shape_box(b, hx, hy, hz)
+  local s = dbg.box(b, hx, hy, hz)
   b3.shape_set_material(s, friction or 0.7, restitution or 0.35)
-  bodies[#bodies + 1] = b
+  bodies[#bodies + 1] = { body = b, kind = "box", hx = hx, hy = hy, hz = hz }
   return b
 end
 
 -- Build one hole: geometry, collision, and where the ball and cup are.
 function M.build(world, level)
   freeMeshes()
+  dbg.reset()
   bodies = {}
   spinners = {}
   rails = {}
@@ -630,9 +646,10 @@ function M.build(world, level)
       finish(m, tex.lit.edge.south)
 
       local b = b3.body_new(world, e.x, WALL_H / 2, e.y, 1)   -- 1 = kinematic
-      local sh = b3.shape_box(b, e.hw, WALL_H / 2, e.hh)
+      local sh = dbg.box(b, e.hw, WALL_H / 2, e.hh)
       b3.shape_set_material(sh, 0.4, 0.6)
-      bodies[#bodies + 1] = b
+      bodies[#bodies + 1] = { body = b, kind = "box",
+                              hx = e.hw, hy = WALL_H / 2, hz = e.hh }
       spinners[#spinners + 1] = {
         mesh = m, body = b, x = e.x, y = e.y,
         speed = e.spinSpeed or 1.15, angle = 0,
@@ -657,9 +674,9 @@ function M.build(world, level)
         -- twice and ends up off the course, hanging in the sky.
         batchSphere(bumperFlat, e.x, WALL_H / 2, e.y, e.r, 8)
         local b = b3.body_new(world, e.x, WALL_H / 2, e.y, 0)
-        local s = b3.shape_sphere(b, e.r)
+        local s = dbg.sphere(b, e.r)
         b3.shape_set_material(s, 0.5, e.restitution or 0.55)
-        bodies[#bodies + 1] = b
+        bodies[#bodies + 1] = { body = b, kind = "sphere", r = e.r }
       elseif e.kind == "poly" then
         -- A POLYGON RAIL IS A PRISM, drawn and collided as the same shape.
         --
@@ -794,6 +811,9 @@ end
 -- alpha blending, so a translucent quad paints a solid black rectangle.
 function M.rails() return rails end
 
+-- The collision bodies, for the debug renderer.
+function M.bodies() return bodies end
+
 function M.ballMesh() return ballMesh end
 
 -- Advance the moving obstacles. Kinematic bodies do not move themselves:
@@ -806,6 +826,12 @@ function M.update(dt)
 end
 
 function M.draw()
+  -- The physics view REPLACES the art when it is on: seeing both at once
+  -- is exactly the ambiguity it exists to remove.
+  if dbg.isEnabled() then
+    dbg.draw()
+    return
+  end
   for _, m in ipairs(meshes) do
     dream:draw(m[1], m[2], m[3], m[4])
   end
