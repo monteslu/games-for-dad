@@ -263,11 +263,42 @@ from PIL import Image
 import json
 im = Image.open(${JSON.stringify(shot)}).convert('RGB')
 w, h = im.size
-# The cart reports the ball in CART pixels on a 1920x1080 cart, which is
-# the same coordinate space as the framebuffer, so no conversion is needed
-# -- but the 3D camera projects it, so search a window around the reported
-# spot rather than trusting the exact pixel.
-cx, cy = ${ballPx.x}, ${ballPx.y}
+# PROJECT the cart position before looking for the ball there.
+#
+# The cart reports CART pixels, which is the physics' space -- but the ball
+# is drawn by a tilted perspective camera, so it lands somewhere else on
+# screen entirely (up to 174px away). Searching at the raw cart coordinate
+# is the very bug this suite exists to catch, committed inside the test.
+#
+# Same camera as love.draw: eye (960, 1490, 900)/U looking at (960, 0,
+# 540)/U with fov 52, U = 120.
+import math
+U = 120.0
+ex, ey, ez = 960 / U, 1490 / U, 900 / U
+tx, ty, tz = 960 / U, 0.0, 540 / U
+fx, fy, fz = tx - ex, ty - ey, tz - ez
+fl = math.sqrt(fx * fx + fy * fy + fz * fz)
+fx, fy, fz = fx / fl, fy / fl, fz / fl
+# right = forward x up
+rx, ry, rz = fy * 0.0 - fz * 1.0, fz * 0.0 - fx * 0.0, fx * 1.0 - fy * 0.0
+rl = math.sqrt(rx * rx + ry * ry + rz * rz)
+rx, ry, rz = rx / rl, ry / rl, rz / rl
+# up = right x forward
+ux, uy, uz = ry * fz - rz * fy, rz * fx - rx * fz, rx * fy - ry * fx
+tan = math.tan(math.radians(52 / 2))
+def project(px, py, h):
+    dx, dy, dz = px / U - ex, h / U - ey, py / U - ez
+    vx = dx * rx + dy * ry + dz * rz
+    vy = dx * ux + dy * uy + dz * uz
+    vz = dx * fx + dy * fy + dz * fz
+    if vz <= 0.001:
+        return None
+    return (vx / (vz * tan * (1920 / 1080))) * 960 + 960, (-vy / (vz * tan)) * 540 + 540
+pr = project(${ballPx.x}, ${ballPx.y}, 11.5)
+if pr is None:
+    print(json.dumps(None))
+    raise SystemExit(0)
+cx, cy = int(pr[0]), int(pr[1])
 best, vals = None, []
 for R in (26, 60, 120):
     vals = []

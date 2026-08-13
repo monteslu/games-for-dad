@@ -75,25 +75,24 @@ function M.makeTextures()
     return 0.16 * l, 0.52 * l, 0.20 * l
   end)
 
-  -- EDGE. The checkered band on the rails, straight from Neverputt's
-  -- vocabulary: alternating turf-green and pale stone. Bold, because a
-  -- rail is only a few dozen pixels tall on screen and subtle banding
-  -- would vanish.
-  -- FOUR squares across, not eight. A rail is only a few dozen pixels tall
-  -- on screen; at eight the checker collapses into a grey dither that
-  -- reads as a flat sheet lying on the grass rather than as a solid kerb
-  -- with a top and two sides. Neverputt's own edge texture is similarly
-  -- coarse, and coarse is what survives.
-  T.edge = image(S, function(x, y, size)
-    local c = (math.floor(x / (size / 4)) + math.floor(y / (size / 4))) % 2
-    local n = fbm(x / 5, y / 5, 37, 3)
-    if c == 0 then
-      local l = 0.74 + n * 0.26
-      return 0.17 * l, 0.46 * l, 0.20 * l
-    else
-      local l = 0.80 + n * 0.24
-      return 0.86 * l, 0.85 * l, 0.79 * l
-    end
+  -- THE WALLS ARE CONCRETE.
+  --
+  -- I had these as a green/grey CHECKER, which was wrong: Neverputt's
+  -- checkered "edge-green" is decorative course trim used a handful of
+  -- times, while the material actually on its walls is turf-grey -- used
+  -- 43 times in a single hole against edge-green's 8. Measured, turf-grey
+  -- is flat grey concrete: mean luminance 126, standard deviation 3.7,
+  -- a fine speckle with no pattern whatsoever.
+  --
+  -- So: fine high-frequency grain, a barely-there mottle to break up large
+  -- faces, and no repeating figure at all. A pattern on a wall reads as
+  -- decoration; concrete reads as a wall.
+  T.edge = image(S, function(x, y)
+    local grain = fbm(x / 1.6, y / 1.6, 37, 2)
+    local mottle = fbm(x / 22, y / 22, 41, 3)
+    local l = 0.94 + (grain - 0.5) * 0.10 + (mottle - 0.5) * 0.13
+    -- very slightly cool, the way cast concrete photographs
+    return 0.50 * l, 0.505 * l, 0.515 * l
   end)
 
   -- STONE. The apron under the green.

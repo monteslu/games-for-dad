@@ -159,6 +159,46 @@ ok('the ball can be SUNK and the hole advances', sank,
    'fourteen aimed putts at hole 1 never dropped -- the cup trigger or the ' +
    'aim mapping is wrong');
 
+// ── 5. the 2D overlays line up with the 3D ball ───────────────────────
+//
+// The aim line, the trail and the particles are authored in CART pixels
+// while the ball is drawn by a perspective camera. Without projecting the
+// overlays through that same camera they land up to 174px from the ball --
+// correct only at the dead centre of the screen, so it looks nearly right
+// and is wrong everywhere it matters.
+await tool('loadMedia', { platform: 'wasmcart', path: CART });
+await tool('frame', { op: 'step', frames: 25 });
+await tool('input', { op: 'pointer', id: 0, x: 372, y: 378, left: true });
+await tool('frame', { op: 'step', frames: 3 });
+await tool('input', { op: 'pointer', id: 0, x: 250, y: 330, left: true });
+await tool('frame', { op: 'step', frames: 3 });
+const alignShot = await shot('05-aim-alignment');
+
+const alignPy = `
+from PIL import Image
+import json
+im = Image.open(${JSON.stringify('/tmp/claude-1000/playshots/05-aim-alignment.png')}).convert('RGB')
+# the aim line is warm: strongly red-over-blue
+aim = [(x, y) for y in range(70, 990) for x in range(0, 1920)
+       if (lambda p: p[0] > 200 and p[1] > 140 and p[2] < 170 and p[0] - p[2] > 50)(im.getpixel((x, y)))]
+# the ball is bright and neutral
+ball = [(x, y) for y in range(70, 990) for x in range(0, 1920)
+        if (lambda p: min(p) > 150 and max(p) - min(p) < 60 and not p[1] > p[0] + 15)(im.getpixel((x, y)))]
+if not aim or not ball:
+    print(json.dumps(None))
+else:
+    # the aim line's END nearest the ball should touch it
+    bxs = [p[0] for p in ball]; bys = [p[1] for p in ball]
+    bx, by = sum(bxs) / len(bxs), sum(bys) / len(bys)
+    best = min(((ax - bx) ** 2 + (ay - by) ** 2) ** 0.5 for ax, ay in aim)
+    print(json.dumps({'gap': best}))
+`;
+const align = JSON.parse(execFileSync('python3', ['-c', alignPy], { encoding: 'utf8' }));
+ok('the aim line meets the ball (2D overlays are projected)',
+   align && align.gap < 40,
+   align ? `the aim line comes no closer than ${align.gap.toFixed(0)}px to the ball`
+         : 'could not find the aim line or the ball');
+
 console.log();
 if (failures.length) {
   console.log(`FAIL (${failures.length})`);

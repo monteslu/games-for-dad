@@ -7,6 +7,17 @@
 
 local M = {}
 
+-- Everything here is authored in CART PIXELS, the same space as the
+-- physics and the level data -- but it is drawn OVER a perspective render
+-- of the course, so a raw cart coordinate lands up to 174px from the thing
+-- it is attached to. main.lua installs the projection; until it does,
+-- points pass through unchanged so this module still works standalone.
+local function P(x, y, h)
+  local f = rawget(_G, "MINIGOLF_TO_SCREEN")
+  if not f then return x, y end
+  return f(x, y, h or 0)
+end
+
 -- ── ball trail ────────────────────────────────────────────────────────
 -- A fading ribbon behind a rolling ball. This is the single cheapest
 -- thing that makes motion read as FAST rather than as a sprite changing
@@ -191,7 +202,8 @@ function M.drawTrail(r)
     if p.age > 0 then
       local a = p.age * p.age * 0.42
       g.setColor(1, 1, 0.92, a)
-      g.circle("fill", p.x, p.y, r * (0.30 + p.age * 0.62))
+      local sx, sy = P(p.x, p.y, r)
+      g.circle("fill", sx, sy, r * (0.30 + p.age * 0.62))
     end
   end
   g.setBlendMode("alpha")
@@ -208,18 +220,21 @@ function M.draw()
       local rr = p.r + (1 - t) * 130
       g.setLineWidth(math.max(1.5, 8 * t))
       g.setColor(p.cr, p.cg, p.cb, a * 0.75)
-      g.circle("line", p.x, p.y, rr)
+      local sx, sy = P(p.x, p.y)
+      g.circle("line", sx, sy, rr)
     elseif p.kind == 1 then
       -- confetti: a rotating sliver, so it tumbles rather than floats
-      g.push(); g.translate(p.x, p.y); g.rotate(p.spin)
+      local sx, sy = P(p.x, p.y)
+      g.push(); g.translate(sx, sy); g.rotate(p.spin)
       g.setColor(p.cr, p.cg, p.cb, a)
       g.rectangle("fill", -p.r, -p.r * 0.34, p.r * 2, p.r * 0.68)
       g.pop()
     else
+      local sx, sy = P(p.x, p.y)
       g.setColor(p.cr, p.cg, p.cb, a * 0.55)
-      g.circle("fill", p.x, p.y, p.r * 1.8)
+      g.circle("fill", sx, sy, p.r * 1.8)
       g.setColor(p.cr, p.cg, p.cb, a)
-      g.circle("fill", p.x, p.y, p.r * 0.8)
+      g.circle("fill", sx, sy, p.r * 0.8)
     end
   end
   g.setBlendMode("alpha")
@@ -231,10 +246,11 @@ function M.drawPops(font)
   for i = 1, popN do
     local p = pops[i]
     local a = math.min(1, p.life * 1.6)
+    local sx, sy = P(p.x, p.y)
     g.setColor(0, 0, 0, a * 0.5)
-    g.printf(p.text, p.x - 200 + 3, p.y + 3, 400, "center")
+    g.printf(p.text, sx - 200 + 3, sy + 3, 400, "center")
     g.setColor(1, 0.9, 0.45, a)
-    g.printf(p.text, p.x - 200, p.y, 400, "center")
+    g.printf(p.text, sx - 200, sy, 400, "center")
   end
 end
 

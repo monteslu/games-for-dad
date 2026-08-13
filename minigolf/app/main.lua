@@ -98,6 +98,49 @@ end
 
 local function setMsg(s, secs) msg, msgTimer = s, secs or 2.2 end
 
+-- ── projecting the green onto the screen ──────────────────────────────
+--
+-- THE 2D OVERLAYS HAVE TO GO THROUGH THE CAMERA TOO.
+--
+-- The aim line, the trail and the particles are all authored in CART
+-- PIXELS, which is the space the level data and the physics use. The
+-- course, though, is drawn by a tilted perspective camera -- so a point at
+-- cart (372,378) actually lands at screen (546,429). Drawing the overlays
+-- at their raw cart coordinates puts them up to 174px away from the ball
+-- they are supposed to be attached to; they agree only at the exact centre
+-- of the screen, which is why it looks almost right.
+--
+-- These functions project a point ON THE GREEN (y=0) to screen pixels
+-- using the same eye, target and fov the 3D pass just used.
+local projR, projU, projF, projEye = nil, nil, nil, nil
+local projTanX, projTanY = 1, 1
+
+function setProjection(eye, target, fov)
+  local f = (target - eye):normalize()
+  local up = dream.vec3(0, 1, 0)
+  local r = f:cross(up):normalize()
+  local u = r:cross(f):normalize()
+  projR, projU, projF, projEye = r, u, f, eye
+  local t = math.tan(math.rad(fov / 2))
+  projTanY = t
+  projTanX = t * (1920 / 1080)
+end
+
+-- cart pixels (x, y) on the green -> screen pixels
+local function toScreen(px, py, height)
+  if not projR then return px, py end
+  local dx = px / U - projEye.x
+  local dy = (height or 0) / U - projEye.y
+  local dz = py / U - projEye.z
+  local x = dx * projR.x + dy * projR.y + dz * projR.z
+  local y = dx * projU.x + dy * projU.y + dz * projU.z
+  local z = dx * projF.x + dy * projF.y + dz * projF.z
+  if z <= 0.001 then return -9999, -9999 end
+  return (x / (z * projTanX)) * 960 + 960,
+         (-y / (z * projTanY)) * 540 + 540
+end
+_G.MINIGOLF_TO_SCREEN = toScreen
+
 -- ── level building ────────────────────────────────────────────────────
 
 local function buildLevel(n)
@@ -391,18 +434,24 @@ local function drawAim()
   local bx, by = ballPos()
   local power = aimPull / MAX_PULL
 
-  local ex = bx - math.cos(aimAngle) * aimPull
-  local ey = by - math.sin(aimAngle) * aimPull
+  -- Every point goes through toScreen. The aim line is authored in cart
+  -- pixels like the physics, but it is drawn OVER a perspective render, so
+  -- raw cart coordinates put it up to 174px away from the ball it belongs
+  -- to -- correct only at the exact centre of the screen.
+  local sx, sy = toScreen(bx, by, BALL_R)
+  local ex, ey = toScreen(bx - math.cos(aimAngle) * aimPull,
+                          by - math.sin(aimAngle) * aimPull, BALL_R)
   g.setLineWidth(7)
   g.setColor(1, 0.95 - power * 0.65, 0.75 - power * 0.7, 0.92)
-  g.line(bx, by, ex, ey)
+  g.line(sx, sy, ex, ey)
   g.circle("fill", ex, ey, 9)
 
   g.setColor(1, 1, 1, 0.5)
   for i = 1, 9 do
     local d = i * 26
-    g.circle("fill", bx + math.cos(aimAngle) * d, by + math.sin(aimAngle) * d,
-             3.2 - i * 0.2)
+    local dx, dy = toScreen(bx + math.cos(aimAngle) * d,
+                            by + math.sin(aimAngle) * d, BALL_R)
+    g.circle("fill", dx, dy, 3.2 - i * 0.2)
   end
 end
 
@@ -466,10 +515,11 @@ function love.draw()
   -- and aims at its middle, which leans the view just enough for the rails
   -- to show their side faces without skewing the course into a trapezoid.
   local cx, cy = 960, 540
-  local cam = dream:newCamera(camWorld(
-    dream.vec3(cx / U, 1490 / U, (cy + 360) / U),
-    dream.vec3(cx / U, 0, cy / U)))
+  local eye = dream.vec3(cx / U, 1490 / U, (cy + 360) / U)
+  local tgt = dream.vec3(cx / U, 0, cy / U)
+  local cam = dream:newCamera(camWorld(eye, tgt))
   cam:setFov(52)
+  setProjection(eye, tgt, 52)
 
   dream:prepare()
   -- LIGHTS GO HERE, NOT IN love.load: prepare() clears the light list every
