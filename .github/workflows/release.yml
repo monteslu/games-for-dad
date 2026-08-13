@@ -159,6 +159,15 @@ jobs:
           npm i --no-save wasmcart
           echo "WASMCART_PACK=$PWD/node_modules/wasmcart/bin/wasmcart-pack.js" >> "$GITHUB_ENV"
 
+      # SDL and Lua are FETCHED, not vendored: fetch-deps.sh clones a
+      # pinned SDL tag and downloads Lua 5.4.7, patching it exactly the
+      # way the wasm engine does so both targets compile the same VM.
+      # Without this the native build configures and then dies with
+      # "Lua not found. Run deps/fetch-deps.sh" -- which it did, after
+      # spending a minute and a half on cmake first.
+      - name: fetch SDL and Lua
+        run: cd android-host && ./deps/fetch-deps.sh
+
       # Same committed engine as the carts job. The android-host checkout
       # already brings wasmcart-lua in as a submodule, so point at that copy
       # rather than cloning it twice.
