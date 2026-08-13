@@ -91,8 +91,30 @@ pts = [(x, y) for y in range(70, h - 90) for x in range(0, w)
 if not pts:
     print(json.dumps(None))
 else:
-    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
-    print(json.dumps({'n': len(pts), 'w': max(xs) - min(xs), 'h': max(ys) - min(ys),
+    # CLUSTER, do not take a global bounding box. Now that the rails cast
+    # contact shadows, the darkest pixels on the course are no longer only
+    # the cup -- a box around all of them spanned 707px from the cup to a
+    # shadow under a boost pad and reported the cup as a 707x37 smear.
+    ptset = set(pts)
+    seen = set()
+    best = None
+    for q in pts:
+        if q in seen:
+            continue
+        stack, blob = [q], []
+        seen.add(q)
+        while stack:
+            cx0, cy0 = stack.pop()
+            blob.append((cx0, cy0))
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    r = (cx0 + dx, cy0 + dy)
+                    if r in ptset and r not in seen:
+                        seen.add(r); stack.append(r)
+        if best is None or len(blob) > len(best):
+            best = blob
+    xs = [q[0] for q in best]; ys = [q[1] for q in best]
+    print(json.dumps({'n': len(best), 'w': max(xs) - min(xs), 'h': max(ys) - min(ys),
                       'cx': (min(xs) + max(xs)) // 2, 'cy': (min(ys) + max(ys)) // 2}))
 `;
   return JSON.parse(execFileSync('python3', ['-c', py], { encoding: 'utf8' }));
@@ -241,15 +263,72 @@ for (let hole = 1; hole <= HOLES; hole++) {
         `only ${a.distinct} distinct colours -- an error screen or blank frame`);
   check(hole, 'flag is visible', flag.n >= 20, `only ${flag.n} red px`);
 
-  // THE BALL MUST NOT START IN THE CUP.
+  // THE CUP. Big enough to putt into, solid rather than a ring outline,
+  // and ROUND rather than smeared. All three matter and each has actually
+  // shipped broken: a cup narrower than the ball, a bare ring with grass
+  // showing through the middle, and -- when the hole was sunk below the
+  // green -- a 989x262 streak that a size-only check passed happily.
+  check(hole, 'cup is rendered and large enough', cup && cup.w >= 18 && cup.h >= 12,
+        cup ? `cup is only ${cup.w}x${cup.h}px` : 'no cup pixels at all');
+  if (cup) {
+    const ideal = Math.PI / 4 * cup.w * cup.h;
+    check(hole, 'cup is a solid disc, not a ring outline',
+          cup.n >= ideal * 0.7,
+          `cup has ${cup.n}px where a solid ${cup.w}x${cup.h} hole needs ` +
+          `${Math.round(ideal * 0.7)} -- it is rendering as an outline`);
+    const ratio = cup.w / Math.max(1, cup.h);
+    check(hole, 'the cup is round, not smeared',
+          ratio > 0.4 && ratio < 3.0,
+          `cup is ${cup.w}x${cup.h}, an aspect of ${ratio.toFixed(1)}:1`);
+  }
+
+  // CONTACT SHADOWS, measured as the DIP beside a rail rather than by an
+  // absolute brightness.
   //
-  // This is the assertion that catches a mirrored camera, which is how the
-  // scene shipped once: right = up x forward instead of forward x up gives
-  // a left-handed basis, the whole course renders mirrored, and the ball
-  // draws at the CUP's end while the hole appears at the tee. Every colour
-  // and coverage check above passes happily on that frame -- the picture is
-  // a perfectly good render of the wrong thing. Only the relative geometry
-  // of ball and cup exposes it.
+  // A first version counted turf pixels below a fixed green level and
+  // passed happily with shadows switched off: the shadow only darkens the
+  // green from 140 to about 126, which is well inside the turf texture's
+  // own noise, so an absolute threshold cannot tell them apart. What is
+  // unambiguous is the GRADIENT -- turf immediately beside a rail is
+  // consistently darker than turf in the open, and without shadows the two
+  // are the same.
+  {
+    const py = `
+from PIL import Image
+import json
+im = Image.open(${JSON.stringify(shot)}).convert('RGB')
+w, h = im.size
+def green(p):
+    return p[1] > p[0] + 25 and p[1] > p[2] + 25
+# For each rail-ish (grey) pixel, look a short way DOWN-RIGHT -- the
+# direction the shadow is cast -- and compare that turf against turf
+# further out along the same line.
+near, far, n = 0, 0, 0
+for y in range(70, h - 130, 4):
+    for x in range(0, w - 90, 4):
+        p = im.getpixel((x, y))
+        grey = abs(p[0] - p[1]) < 12 and abs(p[1] - p[2]) < 12 and 80 < p[1] < 200
+        if not grey:
+            continue
+        a = im.getpixel((x + 14, y + 12))
+        b = im.getpixel((x + 52, y + 44))
+        if green(a) and green(b):
+            near += a[1]; far += b[1]; n += 1
+if n < 20:
+    print(json.dumps(None))
+else:
+    print(json.dumps({'n': n, 'near': near / n, 'far': far / n}))
+`;
+    const sh = JSON.parse(execFileSync('python3', ['-c', py], { encoding: 'utf8' }));
+    if (sh) {
+      check(hole, 'the course casts contact shadows',
+            sh.far - sh.near >= 4,
+            `turf beside a rail averages ${sh.near.toFixed(1)} green against ` +
+            `${sh.far.toFixed(1)} in the open -- a dip of only ` +
+            `${(sh.far - sh.near).toFixed(1)}, so nothing is being cast`);
+    }
+  }
+
   // THE BALL MUST BE TEXTURED, and it must be where the game says it is.
   //
   // A uniform white sphere is identical at every orientation, so the roll

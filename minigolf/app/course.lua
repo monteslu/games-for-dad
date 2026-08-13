@@ -101,6 +101,17 @@ function M.initMaterials()
   mat.ball    = texMat("ball",  tex.ball,  0.25)
   mat.flag    = texMat("flag",  tex.flag,  0.9)
 
+  -- The shadow is ALPHA-BLENDED onto the green, so it must not be culled
+  -- (it is a single quad seen from one side) and must not be lit -- a
+  -- shadow that brightens with the sun is not a shadow.
+  mat.shadow = dream:newMaterial("shadow")
+  mat.shadow:setColor(1, 1, 1, 1)
+  mat.shadow:setEmissionTexture(tex.shadow)
+  mat.shadow:setEmission(0, 0, 0)
+  mat.shadow:setEmissionFactor(1, 1, 1)
+  mat.shadow:setRoughness(1)
+  mat.shadow:setCullMode("none")
+
   -- The cup is a dark hole. No texture: it is the absence of surface.
   mat.cup = dream:newMaterial("cup")
   mat.cup:setColor(0.02, 0.02, 0.03, 1)
@@ -439,6 +450,7 @@ M.buildSphere = buildSphere
 
 local meshes = {}          -- { mesh, x, y, z }
 local spinners = {}        -- moving obstacles, rotated every frame
+local rails = {}           -- rail footprints, for the 2D contact shadows
 local ballMesh
 local bodies = {}          -- every static body, freed on rebuild
 
@@ -471,6 +483,7 @@ function M.build(world, level)
   freeMeshes()
   bodies = {}
   spinners = {}
+  rails = {}
 
   local X0, Y0 = 210, 40
   local W, H = 1500, 1000
@@ -581,6 +594,7 @@ function M.build(world, level)
         -- times the longer the rail is.
         batchBox(edgeBatch, e.x, WALL_H / 2, e.y,
                  e.hw, WALL_H / 2, e.hh, 1 / 104)
+        rails[#rails + 1] = { x = e.x, y = e.y, hw = e.hw, hh = e.hh }
         staticBox(world, e.x, WALL_H / 2, e.y, e.hw, WALL_H / 2, e.hh,
                   0.5, e.restitution or 0.55)
       elseif e.kind == "circle" then
@@ -693,6 +707,38 @@ function M.build(world, level)
 
   return { start = start, goal = goal }
 end
+
+-- A flat textured quad lying on the green, used for contact shadows.
+local function shadowQuad(material, texture, r)
+  local m = dream:newMesh(material)
+  local mv = m:getOrCreateBuffer("vertices")
+  local mn = m:getOrCreateBuffer("normals")
+  local mt = m:getOrCreateBuffer("texCoords")
+  local mf = m:getOrCreateBuffer("faces")
+  local rr = r / U
+  local pts = { {-rr, -rr, 0, 0}, { rr, -rr, 1, 0}, { rr, rr, 1, 1}, {-rr, rr, 0, 1} }
+  for _, p in ipairs(pts) do
+    mv:append({ p[1], 0, p[2] })
+    mn:append({ 0, 1, 0 })
+    mt:append({ p[3], p[4] })
+  end
+  mf:append({ 1, 2, 3 })
+  mf:append({ 1, 3, 4 })
+  return finish(m, texture)
+end
+
+local ballShadow
+function M.ballShadowMesh()
+  if not ballShadow then
+    ballShadow = shadowQuad(mat.shadow, tex.shadow, BALL_R * 2.6)
+  end
+  return ballShadow
+end
+
+-- The rail footprints, so the 2D pass can lay a contact shadow beside each
+-- one. The shadows cannot be 3D geometry: this engine's 3D path does no
+-- alpha blending, so a translucent quad paints a solid black rectangle.
+function M.rails() return rails end
 
 function M.ballMesh() return ballMesh end
 

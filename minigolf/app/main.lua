@@ -587,12 +587,76 @@ function love.draw()
   -- "sun" light made dream:present() clear the frame to black and took the
   -- sky with it.
   course.draw()
+
   dream:draw(course.ballMesh(), ballMatrix())
   dream:present(cam)
 
 
   -- ── 2D overlays ─────────────────────────────────────────────────────
   love.graphics.setDepthMode()
+
+  -- RAIL CONTACT SHADOWS, laid on the green beside each rail. A rail with
+  -- nothing under it reads as a decal; the dark seam where it meets the
+  -- turf is what makes it a solid object standing on a surface.
+  do
+    local g = love.graphics
+    local OFF = 12                      -- offset, away from the key light
+    -- CLIPPED TO THE GREEN. A shadow is cast ON something; without this the
+    -- offset pushes the rightmost rails' shadows off the course entirely
+    -- and they hang in the sky, which looks worse than having none.
+    local gx1, gy1 = toScreen(210, 40, 0)
+    local gx2, gy2 = toScreen(1710, 40, 0)
+    local gx3, gy3 = toScreen(1710, 1040, 0)
+    local gx4, gy4 = toScreen(210, 1040, 0)
+    local minx = math.floor(math.min(gx1, gx2, gx3, gx4))
+    local maxx = math.ceil(math.max(gx1, gx2, gx3, gx4))
+    local miny = math.floor(math.min(gy1, gy2, gy3, gy4))
+    local maxy = math.ceil(math.max(gy1, gy2, gy3, gy4))
+    g.setScissor(minx, miny, maxx - minx, maxy - miny)
+    for _, r in ipairs(course.rails()) do
+      for i = 3, 1, -1 do
+        local t = i / 3
+        local grow = (1 - t) * 9
+        g.setColor(0, 0, 0, 0.22 * (1.05 - t))
+        local x1, y1 = toScreen(r.x - r.hw - grow + OFF, r.y - r.hh - grow + OFF, 0)
+        local x2, y2 = toScreen(r.x + r.hw + grow + OFF, r.y - r.hh - grow + OFF, 0)
+        local x3, y3 = toScreen(r.x + r.hw + grow + OFF, r.y + r.hh + grow + OFF, 0)
+        local x4, y4 = toScreen(r.x - r.hw - grow + OFF, r.y + r.hh + grow + OFF, 0)
+        g.polygon("fill", x1, y1, x2, y2, x3, y3, x4, y4)
+      end
+    end
+    g.setScissor()
+    g.setColor(1, 1, 1, 1)
+  end
+
+  -- THE BALL'S CONTACT SHADOW, as a 2D overlay rather than 3D geometry.
+  --
+  -- It has to be 2D: this engine's 3D path does no alpha blending at all
+  -- (render3d_gl.c has no blend state), so a translucent shadow quad drawn
+  -- as a mesh paints a solid black SQUARE on the green -- which is exactly
+  -- what it did. Projected through the same camera as the aim line, it
+  -- lands under the ball and stays on the surface while the ball rolls.
+  --
+  -- Soft-edged: concentric ellipses of falling alpha, because a hard disc
+  -- reads as a sticker. It shrinks and fades as the ball leaves the green.
+  do
+    local bx, by = ballPos()
+    local _, byy = b3.body_position(ballBody)
+    local lift = math.max(0, (byy - BALL_R) / (BALL_R * 6))
+    local k = math.max(0.4, 1 - lift)
+    -- OFFSET away from the key light, the way a real contact shadow falls.
+    -- The rig's warm sun is at (-8,+32,-8), so the shadow goes down-right.
+    local sx, sy = toScreen(bx + BALL_R * 0.55, by + BALL_R * 0.75, 0)
+    local g = love.graphics
+    for i = 6, 1, -1 do
+      local t = i / 6
+      -- darker at the core, wide and faint at the rim
+      g.setColor(0, 0, 0, 0.30 * k * (1.1 - t))
+      g.ellipse("fill", sx, sy, BALL_R * 1.9 * t * k, BALL_R * 1.25 * t * k)
+    end
+    g.setColor(1, 1, 1, 1)
+  end
+
   drawAim()
   fx.drawTrail(BALL_R)
   fx.draw()

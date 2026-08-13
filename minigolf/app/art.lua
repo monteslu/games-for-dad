@@ -204,6 +204,20 @@ function M.makeTextures()
   end
   T.zone = image(S, zoneFn)
 
+  -- THE CONTACT SHADOW: a radial alpha gradient, opaque at the centre and
+  -- falling to nothing at the rim. Neverputt's own shadow.png is exactly
+  -- this -- a 256x256 luminance-alpha disc, 253 at the centre and 0 at the
+  -- edge -- projected under the ball. It is the single biggest thing
+  -- separating a ball that sits ON the green from one that hovers above it.
+  T.shadow = image(64, function(x, y, size)
+    local dx = (x + 0.5) / size * 2 - 1
+    local dy = (y + 0.5) / size * 2 - 1
+    local d = math.sqrt(dx * dx + dy * dy)
+    -- squared falloff: a soft edge without a hard rim
+    local a = math.max(0, 1 - d)
+    return 0, 0, 0, a * a * 0.62
+  end)
+
   -- FLAG. Flat red; it is small and only needs to read as a pin.
   T.flag = image(16, function() return 0.86, 0.20, 0.22 end)
 
