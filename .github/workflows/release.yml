@@ -42,8 +42,17 @@ jobs:
 
       # The packer comes from npm rather than a checkout, so CI never needs
       # the wasmcart source tree. build.sh resolves it via require.resolve.
+      # WASMCART_PACK IS EXPORTED EXPLICITLY. build.sh otherwise falls back
+      # to `node -e require.resolve('wasmcart/...')`, and Node resolves
+      # node_modules upward from the CURRENT DIRECTORY -- which is the
+      # game's folder, not the repo root where npm installed it. That
+      # fallback works on a dev box only because a node_modules happens to
+      # sit somewhere above it; on a clean runner every cart failed with
+      # "no packer at ... (npm i wasmcart)".
       - name: install the packer
-        run: npm i --no-save wasmcart
+        run: |
+          npm i --no-save wasmcart
+          echo "WASMCART_PACK=$PWD/node_modules/wasmcart/bin/wasmcart-pack.js" >> "$GITHUB_ENV"
 
       # The ENGINE is a COMMITTED binary in the wasmcart-lua repo
       # (build/engine.wasm), not an npm package and not something CI builds.
@@ -123,8 +132,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      # WASMCART_PACK IS EXPORTED EXPLICITLY. build.sh otherwise falls back
+      # to `node -e require.resolve('wasmcart/...')`, and Node resolves
+      # node_modules upward from the CURRENT DIRECTORY -- which is the
+      # game's folder, not the repo root where npm installed it. That
+      # fallback works on a dev box only because a node_modules happens to
+      # sit somewhere above it; on a clean runner every cart failed with
+      # "no packer at ... (npm i wasmcart)".
       - name: install the packer
-        run: npm i --no-save wasmcart
+        run: |
+          npm i --no-save wasmcart
+          echo "WASMCART_PACK=$PWD/node_modules/wasmcart/bin/wasmcart-pack.js" >> "$GITHUB_ENV"
 
       # Same committed engine as the carts job. The android-host checkout
       # already brings wasmcart-lua in as a submodule, so point at that copy
