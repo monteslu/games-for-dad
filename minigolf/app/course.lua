@@ -34,7 +34,11 @@ M.BALL_R = BALL_R
 -- picture from this camera: at 34 the rails read as flat tape on the
 -- grass, because almost all of what you see is their top face.
 local WALL_H  = 52                  -- timber rail height
-local FLOOR_T = 10                  -- how thick the green's slab is
+-- How thick the green's slab is. Thick enough that its SIDE faces are a
+-- visible band from this camera: with the surrounding apron gone, that
+-- band is the only thing giving the course a physical edge, and at 10px
+-- the green read as a sheet of paper lying in the sky.
+local FLOOR_T = 46                  -- how thick the green's slab is
 local CUP_R   = BALL_R * 2.2        -- the cup, sized off the BALL
 M.CUP_R = CUP_R
 
@@ -486,9 +490,16 @@ function M.build(world, level)
   batchBox(turfBatch, cx, -FLOOR_T / 2, cy, W / 2, FLOOR_T / 2, H / 2, 1 / 96)
   staticBox(world, cx, -FLOOR_T / 2, cy, W / 2, FLOOR_T / 2, H / 2, 0.85, 0.2)
 
-  -- the stone apron the green sits on, purely to frame it
-  batchBox(stoneBatch, cx, -FLOOR_T - 22, cy,
-           W / 2 + 150, 22, H / 2 + 120, 1 / 128)
+  -- NO APRON. There used to be a stone slab under and around the green,
+  -- "purely to frame it" -- a second, DARKER grey surrounding the lighter
+  -- grey of the rails. Two near-identical greys (0.46 against 0.50) that
+  -- differ only in brightness read as one material lit two different ways,
+  -- which is incoherent side by side.
+  --
+  -- Neverputt has no apron: its greens simply end, and the sky shows
+  -- behind them. Counted across its own hole files the outer material is
+  -- turf-grey on the WALLS, not on a surround -- there is no surround.
+  -- The sky gradient is the frame.
 
   local goal, start
   for _, e in ipairs(level.entities) do

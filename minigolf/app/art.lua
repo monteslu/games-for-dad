@@ -89,6 +89,15 @@ local COL_A = { 1.00, 0.80, 0.80 }
 local COL_B = { 0.80, 1.00, 0.80 }
 local AMBIENT = 0.42
 
+-- NORMALISED so the brightest face lands just under 1.0.
+--
+-- The rig's raw numbers put a top face at 1.60 and a side at 0.57, but the
+-- texture clamps at 1.0 -- so the top was crushed flat and the DIFFERENCE
+-- between a face pointing at the sky and one standing vertical was thrown
+-- away. The green's edge band came out brighter than the green's top,
+-- which is backwards and is exactly what makes a slab look like paper.
+local SHADE_SCALE = 0.60
+
 local function normalize(v)
   local l = math.sqrt(v[1] * v[1] + v[2] * v[2] + v[3] * v[3])
   return { v[1] / l, v[2] / l, v[3] / l }
@@ -99,9 +108,9 @@ local function shadeFor(n)
   local a, b = normalize(SUN_A), normalize(SUN_B)
   local da = math.max(0, n[1] * a[1] + n[2] * a[2] + n[3] * a[3])
   local db = math.max(0, n[1] * b[1] + n[2] * b[2] + n[3] * b[3])
-  local r = AMBIENT + da * COL_A[1] * 0.72 + db * COL_B[1] * 0.72
-  local g = AMBIENT + da * COL_A[2] * 0.72 + db * COL_B[2] * 0.72
-  local bl = AMBIENT + da * COL_A[3] * 0.72 + db * COL_B[3] * 0.72
+  local r = (AMBIENT + da * COL_A[1] * 0.72 + db * COL_B[1] * 0.72) * SHADE_SCALE
+  local g = (AMBIENT + da * COL_A[2] * 0.72 + db * COL_B[2] * 0.72) * SHADE_SCALE
+  local bl = (AMBIENT + da * COL_A[3] * 0.72 + db * COL_B[3] * 0.72) * SHADE_SCALE
   return r, g, bl
 end
 

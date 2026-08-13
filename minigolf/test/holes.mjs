@@ -274,7 +274,7 @@ w, h = im.size
 # 540)/U with fov 52, U = 120.
 import math
 U = 120.0
-ex, ey, ez = 960 / U, 1490 / U, 900 / U
+ex, ey, ez = 960 / U, 1150 / U, 1240 / U
 tx, ty, tz = 960 / U, 0.0, 540 / U
 fx, fy, fz = tx - ex, ty - ey, tz - ez
 fl = math.sqrt(fx * fx + fy * fy + fz * fz)

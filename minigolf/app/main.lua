@@ -552,7 +552,17 @@ function love.draw()
   -- and aims at its middle, which leans the view just enough for the rails
   -- to show their side faces without skewing the course into a trapezoid.
   local cx, cy = 960, 540
-  local eye = dream.vec3(cx / U, 1490 / U, (cy + 360) / U)
+  -- A LOWER, MORE TILTED EYE.
+  --
+  -- At 1490 up and 360 back the view was nearly straight down: measured,
+  -- the green's near edge projected its bottom ABOVE its top -- a -3.4px
+  -- band -- so the slab's side faces were invisible and the course read as
+  -- a sheet of paper lying in the sky. At 980 up and 900 back the same
+  -- edge shows a real band, which is what gives the course thickness, and
+  -- the whole 1500x1000 layout still fits between the HUD bands. 980/900
+  -- tilts far enough to cut the far edge and let the near rough dominate;
+  -- 1150/700 keeps an 8px band with the course centred.
+  local eye = dream.vec3(cx / U, 1150 / U, (cy + 700) / U)
   local tgt = dream.vec3(cx / U, 0, cy / U)
   local cam = dream:newCamera(camWorld(eye, tgt))
   cam:setFov(52)
