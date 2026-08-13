@@ -120,6 +120,15 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
+      # ImageMagick, for the per-game launcher icons. build-game-apk.sh
+      # resizes each game's icon.png into the five mipmap densities with
+      # `magick`, and the runner does not ship it -- the APK job died with
+      # "magick: command not found" after the native build had already
+      # succeeded. Without it every game would fall back to the repo's
+      # default icon, which is worse than a slow install.
+      - name: install ImageMagick
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq imagemagick
+
       # THE CACHE IS THE WHOLE POINT. Compiling libmain.so per ABI is the
       # only expensive step; everything after it is Gradle swapping one asset
       # and re-zipping. Key on the engine submodule's SHA so the cache is
