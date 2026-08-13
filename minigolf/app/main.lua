@@ -4,9 +4,15 @@
 -- LAYOUTS are converted from that game's own level data; the physics,
 -- rendering and controls here are new.
 --
+-- FULL 3D, with 3D PHYSICS. Box3D simulates a real sphere rolling on a
+-- real surface, so the ball's orientation comes from the solver as an
+-- actual quaternion rather than being derived from how far it moved. An
+-- earlier build ran a 2D world and computed the spin from travel distance;
+-- it looked like a sliding disc because that is what it was.
+--
 -- THE SAME DESIGN RULE AS THE REST OF THE FAMILY: nothing moves unless he
--- moves it, and there is no way to fail. Specifically, two rules from the
--- original are deliberately NOT carried over:
+-- moves it, and there is no way to fail. Two rules from the original are
+-- deliberately NOT carried over:
 --
 --   * the original REFUSES the cup above maxGoalVelocity, so a firm putt
 --     that goes in gets rejected. That punishes a good shot for being
@@ -21,40 +27,44 @@ local theme  = require("lib.theme")
 local ui     = require("lib.ui")
 local sounds = require("lib.sounds")
 local levels = require("levels")
+local dream  = require("3DreamEngine.init")
 local course = require("course")
 local fx     = require("fx")
 
 -- ── constants ─────────────────────────────────────────────────────────
 
-local COURSE_X, COURSE_Y = 210, 40
-local COURSE_W, COURSE_H = 1500, 1000
+local U      = course.U
+local BALL_R = course.BALL_R
 
--- Physics. The original ran Box2D at its own scale with a ball of radius
--- 11.5px; ours uses the engine's 32 px/m default, so the ball is about
--- 0.36m -- roughly a real golf ball if a golf ball were 23px on a 1500px
--- course. Damping is the original's, which is what makes a putt roll out
--- and settle rather than bouncing forever.
-local BALL_R          = 11.5
-local LINEAR_DAMPING  = 0.5
-local ANGULAR_DAMPING = 0.4
-local RESTITUTION     = 0.45      -- lively off the rails, like real timber
-local FRICTION        = 0.25
+-- PHYSICS IN PIXELS. b3.set_meter maps pixels to metres, so the level
+-- data's own units drive the simulation directly and every tuning number
+-- below is readable against the 1500x1000 course.
+local PPM     = 90                -- pixels per metre
+local GRAVITY = -9.81 * PPM
+
+-- A golf ball on a green: bouncy off timber, high rolling resistance so a
+-- putt runs out and settles rather than rolling forever.
+local RESTITUTION = 0.45
+local FRICTION    = 0.28
+local ROLLING     = 0.055
+local LIN_DAMP    = 0.35
+local ANG_DAMP    = 0.55
 
 -- Aiming. Pull BACK from the ball; the pull length is the power, exactly
 -- like Eight Ball's cue, so a player who knows one knows the other.
 local MAX_PULL   = 300            -- px of pull at full power
-local MAX_SPEED  = 1350           -- px/s at full power
-local SETTLE_V   = 6              -- below this the ball is "stopped"
-local SAND_DRAG  = 0.80           -- per-contact velocity multiplier
-local ZONE_PUSH  = 260            -- impulse-zone acceleration, px/s^2
+local MAX_SPEED  = 1500           -- px/s at full power
+local SETTLE_V   = 14             -- below this the ball is "stopped"
+local SAND_DRAG  = 0.80
+local ZONE_PUSH  = 320
 
 local PAR = { 2,3,2,3,3,4,3,3,4,3,3,4,4,4,3,4,3,4,3,4,4,5 }
 
 -- ── state ─────────────────────────────────────────────────────────────
 
 local world, ballBody, ballShape
-local bodies            -- handle -> entity, for hazard lookups
 local level, levelIdx = nil, 1
+local holeInfo
 local strokes, total = 0, 0
 local state = "aim"     -- aim | rolling | sunk | done
 local aimAngle, aimPull = 0, 0
@@ -62,106 +72,84 @@ local t = 0
 local msg, msgTimer = nil, 0
 local sunkTimer = 0
 local startX, startY = 0, 0
-local lastVX, lastVY = nil, nil
-local ballImg
-local motorJoints = {}
+local lastVX, lastVZ = nil, nil
+
+-- 3Dream wants a WORLD matrix for the camera, not a view matrix.
+--
+-- The AIM POINT is a parameter, not always the origin: with a fixed origin
+-- target, pushing the eye back to get a lean also rotates the course under
+-- the camera. RIGHT is forward x up, NOT up x forward -- the other order
+-- gives a left-handed basis and mirrors the whole scene, which renders the
+-- ball at the cup's end of the course and the hole at the tee.
+local function camWorld(eye, target)
+  target = target or dream.vec3(0, 0, 0)
+  local up = dream.vec3(0, 1, 0)
+  local f = (target - eye):normalize()
+  if math.abs(f:dot(up)) > 0.999 then up = dream.vec3(0, 0, 1) end
+  local r = f:cross(up):normalize()
+  local u = r:cross(f):normalize()
+  return dream.mat4({
+    r.x, u.x, -f.x, eye.x,
+    r.y, u.y, -f.y, eye.y,
+    r.z, u.z, -f.z, eye.z,
+    0,   0,    0,   1,
+  })
+end
 
 local function setMsg(s, secs) msg, msgTimer = s, secs or 2.2 end
 
 -- ── level building ────────────────────────────────────────────────────
 
 local function buildLevel(n)
-  if world then world:destroy() end
+  if world then b3.world_destroy(world) end
   level = levels[n]
-  bodies, motorJoints = {}, {}
 
-  -- Top-down: NO GRAVITY. Everything the ball does is the putt, damping
-  -- and whatever the course pushes it with.
-  world = love.physics.newWorld(0, 0)
+  world = b3.world_new(0, GRAVITY, 0)
+  holeInfo = course.build(world, level)
 
-  local byId = {}
+  startX = holeInfo.start and holeInfo.start.x or 400
+  startY = holeInfo.start and holeInfo.start.y or 540
 
-  for _, e in ipairs(level.entities) do
-    if e.id == "ball" then
-      startX, startY = e.x, e.y
-    elseif e.water or e.sand or e.impulse or e.sensor then
-      -- hazards and zones are SENSORS: they report contact without
-      -- blocking the ball, so a bunker slows you rather than stopping
-      -- you dead at its edge
-      local b = love.physics.newBody(world, e.x, e.y, "static")
-      local shp
-      if e.kind == "circle" then shp = love.physics.newCircleShape(e.r)
-      elseif e.kind == "rect" then shp = love.physics.newRectangleShape(e.hw * 2, e.hh * 2)
-      else shp = love.physics.newPolygonShape(e.points) end
-      -- sensor-ness must be set AT CREATION: Box2D 3.x has no setter for
-      -- it, and a fixture that silently stayed solid would make the ball
-      -- bounce off water with nothing on screen explaining why
-      love.physics.newFixture(b, shp, 0, { sensor = true })
-      byId[e.id] = b
-      bodies[b.handle] = e
-    else
-      local b = love.physics.newBody(world, e.x, e.y,
-                                     e.dynamic and "dynamic" or "static")
-      local shp
-      if e.kind == "circle" then shp = love.physics.newCircleShape(e.r)
-      elseif e.kind == "rect" then shp = love.physics.newRectangleShape(e.hw * 2, e.hh * 2)
-      else shp = love.physics.newPolygonShape(e.points) end
-      local f = love.physics.newFixture(b, shp, e.density or 1)
-      f:setRestitution(e.restitution or RESTITUTION)
-      f:setFriction(FRICTION)
-      byId[e.id] = b
-      bodies[b.handle] = e
-    end
-  end
-
-  -- the ball
-  ballBody = love.physics.newBody(world, startX, startY, "dynamic")
-  ballShape = love.physics.newCircleShape(BALL_R)
-  local bf = love.physics.newFixture(ballBody, ballShape, 1)
-  bf:setRestitution(RESTITUTION)
-  bf:setFriction(FRICTION)
-  ballBody:setLinearDamping(LINEAR_DAMPING)
-  ballBody:setAngularDamping(ANGULAR_DAMPING)
-  ballBody:setBullet(true)     -- a hard putt must not tunnel through a rail
-  byId.ball = ballBody
-
-  -- moving obstacles (hole 13's motorised wood bar)
-  if level.joints then
-    for _, j in ipairs(level.joints) do
-      local a, b = byId[j.a], byId[j.b]
-      if a and b then
-        local jt = love.physics.newRevoluteJoint(a, b, a:getX(), a:getY())
-        if j.motor then
-          jt:setMaxMotorForce(j.maxMotorTorque or 3500)
-          jt:setMotorSpeed(j.motorSpeed or 4)
-        end
-        motorJoints[#motorJoints + 1] = jt
-      end
-    end
-  end
+  -- The ball starts ON the green: its centre one radius above y=0, which
+  -- is the putting surface. Dropped from higher it bounces on the tee.
+  ballBody = b3.body_new(world, startX, BALL_R, startY, 2)   -- 2 = dynamic
+  ballShape = b3.shape_sphere(ballBody, BALL_R)
+  b3.shape_set_material(ballShape, FRICTION, RESTITUTION, ROLLING)
+  b3.body_set_linear_damping(ballBody, LIN_DAMP)
+  b3.body_set_angular_damping(ballBody, ANG_DAMP)
+  -- A putt is fast and the rails are thin; without continuous collision a
+  -- hard shot tunnels straight through a rail between steps.
+  b3.body_set_bullet(ballBody, true)
 
   strokes = 0
-  state = "aim"
   aimPull = 0
+  state = "aim"
+  lastVX, lastVZ = nil, nil
   fx.reset()
 end
 
 local function resetBall(why)
-  ballBody:setPosition(startX, startY)
-  ballBody:setLinearVelocity(0, 0)
-  ballBody:setAngularVelocity(0)
-  lastVX, lastVY = nil, nil
+  b3.body_set_transform(ballBody, startX, BALL_R, startY, 0, 1, 0, 0)
+  b3.body_set_velocity(ballBody, 0, 0, 0)
+  b3.body_set_angular_velocity(ballBody, 0, 0, 0)
   state = "aim"
   aimPull = 0
-  if why then setMsg(why, 1.8) end
+  if why then setMsg(why) end
+end
+
+-- The ball's position, in CART PIXELS, which is what the HUD, the aim line
+-- and the hazard tests all speak.
+local function ballPos()
+  local x, y, z = b3.body_position(ballBody)
+  return x, z, y
 end
 
 -- ── input ─────────────────────────────────────────────────────────────
 
-local prevDown, edges, lastEdge, frameNo = {}, {}, {}, 0
-local DEBOUNCE = 9
-local AUTO = rawget(_G, "GOLF_DRIVER")
+local edges, prevDown, lastEdge = {}, {}, {}
+local frameNo, DEBOUNCE = 0, 6
 local padUsed = false
+local AUTO = rawget(_G, "MINIGOLF_AUTOPLAY")
 
 local function readEdges()
   frameNo = frameNo + 1
@@ -199,13 +187,16 @@ end
 
 local function strike()
   local sp = (aimPull / MAX_PULL) * MAX_SPEED
-  if sp < 30 then return end                 -- a nudge is not a stroke
-  ballBody:setLinearVelocity(math.cos(aimAngle) * sp, math.sin(aimAngle) * sp)
+  if sp < 40 then return end                 -- a nudge is not a stroke
+  -- The putt is horizontal: velocity in x and z, nothing in y. A putter
+  -- does not loft the ball, and any vertical component here turns a firm
+  -- shot into a chip that skips over the rails.
+  b3.body_set_velocity(ballBody, math.cos(aimAngle) * sp, 0,
+                       math.sin(aimAngle) * sp)
   strokes = strokes + 1
   state = "rolling"
-  -- turf sprays BACKWARD from the strike, the way a real divot flies
-  local bx0, by0 = ballBody:getPosition()
-  fx.turf(bx0, by0, -math.cos(aimAngle), -math.sin(aimAngle), 0.9)
+  local bx, by = ballPos()
+  fx.turf(bx, by, -math.cos(aimAngle), -math.sin(aimAngle), 0.9)
   aimPull = 0
   sounds.play("clack", 0.55, 0.95 + love.math.random() * 0.12)
 end
@@ -213,15 +204,27 @@ end
 -- ── love callbacks ────────────────────────────────────────────────────
 
 function love.load()
+  -- DIRECT MODE, set before init so the canvas set is built for it. The
+  -- deferred ("normal") path renders the geometry correctly and then
+  -- composites to black in this engine, which is why Eight Ball runs
+  -- direct too.
+  dream.canvases:setMode("direct")
+  dream:init()
+  dream:setSky({ 0.46, 0.66, 0.88 })
+
+  -- The metre scale must be set BEFORE the world exists: every length that
+  -- follows is converted through it.
+  b3.set_meter(PPM)
+
+  course.initMaterials()
   sounds.loadAll()
   fx.init()
-  ballImg = love.graphics.newImage("assets/ball.png")
   buildLevel(levelIdx)
+
   _G.GOLF_STATE = setmetatable({}, { __index = function(_, k)
     if k == "state" then return state end
     if k == "strokes" then return strokes end
     if k == "level" then return levelIdx end
-    if k == "ball" then return ballBody end
     if k == "total" then return total end
     return nil
   end })
@@ -233,9 +236,20 @@ function love.update(dt)
   readPointers()
   if msgTimer > 0 then msgTimer = msgTimer - dt; if msgTimer <= 0 then msg = nil end end
 
+  -- TEST HOOK. The host can write the `aux` debug field to jump straight to
+  -- a hole; the harness uses it to render all 22 without sinking 22 putts.
+  -- It is not reachable from any control, so it cannot fire during play.
+  if love.debugRead then
+    local want = love.debugRead(1)
+    if want and want > 0 and want <= #levels and want ~= levelIdx then
+      levelIdx = want
+      buildLevel(levelIdx)
+    end
+  end
+
   -- ── aiming ──
   if state == "aim" then
-    local bx, by = ballBody:getPosition()
+    local bx, by = ballPos()
 
     if padUsed then
       if love.pad.isDown("left")  then aimAngle = aimAngle - dt * 2.2 end
@@ -255,42 +269,47 @@ function love.update(dt)
         aimPull = math.min(MAX_PULL, d)
       end
     elseif aimPull > 0 and not padUsed then
-      strike()                                  -- released: shoot
+      strike()
     end
   end
 
   -- ── physics ──
   if state == "rolling" or state == "aim" then
-    world:update(1 / 60)
+    b3.world_step(world, 1 / 60, 4)
   end
 
   fx.update(dt)
 
-  if state == "rolling" then
-    local vx, vy = ballBody:getLinearVelocity()
-    local speed = math.sqrt(vx * vx + vy * vy)
-    local bx, by = ballBody:getPosition()
+  -- Publish the ball's position for the test harness. Finding it by
+  -- pixel-hunting is genuinely hard now that the rails are a pale checker
+  -- and the ball is tinted: a colour search merges the two, and every
+  -- refinement of the heuristic was another way to be confidently wrong
+  -- about where the ball was. The cart knows, so it says.
+  do
+    local bx, by = ballPos()
+    love.debugValue(0, math.floor(bx) * 2048 + math.floor(by))
+  end
 
-    -- the trail only makes sense while genuinely moving; a crawling ball
-    -- with a comet tail looks wrong
+  if state == "rolling" then
+    local vx, _, vz = b3.body_velocity(ballBody)
+    local speed = math.sqrt(vx * vx + vz * vz)
+    local bx, by = ballPos()
+
     if speed > 60 then fx.trailPush(bx, by) end
 
-    -- a rail hit: the ball reversed hard this frame. Kick up turf and
-    -- click, scaled by how hard -- a nudge should not sound like a smash.
+    -- a rail hit: the ball reversed hard this frame
     if lastVX then
-      local dvx, dvy = vx - lastVX, vy - lastVY
-      local impact = math.sqrt(dvx * dvx + dvy * dvy)
+      local dvx, dvz = vx - lastVX, vz - lastVZ
+      local impact = math.sqrt(dvx * dvx + dvz * dvz)
       if impact > 180 then
         local g = math.min(1, impact / 900)
         sounds.play("clack", 0.25 + g * 0.6, 0.9 + love.math.random() * 0.25)
-        fx.turf(bx, by, -vx, -vy, 0.4 + g)
+        fx.turf(bx, by, -vx, -vz, 0.4 + g)
       end
     end
-    lastVX, lastVY = vx, vy
+    lastVX, lastVZ = vx, vz
 
-    -- hazards, by proximity. A contact callback would be tidier, but the
-    -- engine polls contacts per step rather than delivering them, and a
-    -- point test against 20-odd sensors is nothing next to the solver.
+    -- hazards, by proximity
     for _, e in ipairs(level.entities) do
       local hit = false
       if e.water or e.sand or e.impulse then
@@ -309,40 +328,39 @@ function love.update(dt)
           resetBall("Water. Take a stroke.")
           break
         elseif e.sand then
-          ballBody:setLinearVelocity(vx * SAND_DRAG, vy * SAND_DRAG)
+          b3.body_set_velocity(ballBody, vx * SAND_DRAG, 0, vz * SAND_DRAG)
         elseif e.impulse then
           local a = math.rad(e.impulseAngle or 0)
           local p = (e.impulse or 1) * ZONE_PUSH * (1 / 60)
-          ballBody:setLinearVelocity(vx + math.cos(a) * p, vy + math.sin(a) * p)
+          b3.body_set_velocity(ballBody, vx + math.cos(a) * p, 0,
+                               vz + math.sin(a) * p)
         end
       end
     end
 
     -- the cup
-    for _, e in ipairs(level.entities) do
-      if e.id == "goal" then
-        local dx, dy = bx - e.x, by - e.y
-        -- generous: the drawn cup is bigger than the 6px sensor, and the
-        -- player is aiming at what they can SEE
-        if dx * dx + dy * dy < 26 * 26 then
-          state = "sunk"
-          sunkTimer = 2.4
-          local d = strokes - (PAR[levelIdx] or 3)
-          total = total + d
-          ballBody:setLinearVelocity(0, 0)
-          ballBody:setPosition(e.x, e.y)
-          sounds.play("hole", 0.9)
-          fx.celebrate(e.x, e.y, strokes == 1 or d <= -1)
-          fx.popup(e.x, e.y - 70, d < 0 and (d .. " under") or
-                   (d == 0 and "par") or ("+" .. d))
-          if strokes > 7 then sounds.play("laugh", 0.7) end
-        end
+    if holeInfo.goal then
+      local dx, dy = bx - holeInfo.goal.x, by - holeInfo.goal.y
+      if dx * dx + dy * dy < course.CUP_R * course.CUP_R then
+        state = "sunk"
+        sunkTimer = 2.4
+        local d = strokes - (PAR[levelIdx] or 3)
+        total = total + d
+        b3.body_set_velocity(ballBody, 0, 0, 0)
+        b3.body_set_angular_velocity(ballBody, 0, 0, 0)
+        b3.body_set_transform(ballBody, holeInfo.goal.x, -BALL_R * 0.4,
+                              holeInfo.goal.y, 0, 1, 0, 0)
+        sounds.play("hole", 0.9)
+        fx.celebrate(holeInfo.goal.x, holeInfo.goal.y, strokes == 1 or d <= -1)
+        fx.popup(holeInfo.goal.x, holeInfo.goal.y - 70,
+                 d < 0 and (d .. " under") or (d == 0 and "par") or ("+" .. d))
+        if strokes > 7 then sounds.play("laugh", 0.7) end
       end
     end
 
     if state == "rolling" and speed < SETTLE_V then
-      ballBody:setLinearVelocity(0, 0)
-      ballBody:setAngularVelocity(0)
+      b3.body_set_velocity(ballBody, 0, 0, 0)
+      b3.body_set_angular_velocity(ballBody, 0, 0, 0)
       state = "aim"
     end
   end
@@ -370,12 +388,9 @@ end
 local function drawAim()
   if state ~= "aim" or aimPull < 4 then return end
   local g = love.graphics
-  local bx, by = ballBody:getPosition()
+  local bx, by = ballPos()
   local power = aimPull / MAX_PULL
 
-  -- The pull line points BACK from the ball, the way a putter goes, and
-  -- fades cream to red with power -- the same language as Eight Ball's
-  -- cue, so the two games teach each other.
   local ex = bx - math.cos(aimAngle) * aimPull
   local ey = by - math.sin(aimAngle) * aimPull
   g.setLineWidth(7)
@@ -383,26 +398,12 @@ local function drawAim()
   g.line(bx, by, ex, ey)
   g.circle("fill", ex, ey, 9)
 
-  -- a dotted forecast the other way, so he can see where it will go
   g.setColor(1, 1, 1, 0.5)
   for i = 1, 9 do
     local d = i * 26
     g.circle("fill", bx + math.cos(aimAngle) * d, by + math.sin(aimAngle) * d,
              3.2 - i * 0.2)
   end
-end
-
-local function drawBall()
-  local g = love.graphics
-  local bx, by = ballBody:getPosition()
-  -- contact shadow first: it is what puts the ball ON the grass rather
-  -- than floating above it
-  g.setColor(0, 0, 0, 0.32)
-  g.ellipse("fill", bx + 4, by + 5, BALL_R * 1.05, BALL_R * 0.8)
-  g.setColor(1, 1, 1, 1)
-  local s = (BALL_R * 2) / ballImg:getWidth()
-  g.draw(ballImg, bx, by, ballBody:getAngle(), s, s,
-         ballImg:getWidth() / 2, ballImg:getHeight() / 2)
 end
 
 local function drawHUD()
@@ -421,50 +422,72 @@ local function drawHUD()
 
   if msg then
     g.setFont(ui.font(theme.fontBig))
-    g.setColor(0.55, 0.92, 1.0, math.min(1, msgTimer * 2))
-    g.printf(msg, 0, 120, 1920, "center")
-  end
-
-  if state == "sunk" then
-    local d = strokes - par
-    local name = (strokes == 1 and "HOLE IN ONE!")
-      or (d <= -3 and "ALBATROSS!") or (d == -2 and "EAGLE!")
-      or (d == -1 and "BIRDIE") or (d == 0 and "PAR")
-      or (d == 1 and "BOGEY") or (d == 2 and "DOUBLE BOGEY") or "NICE TRY"
-    g.setFont(ui.font(theme.fontHuge))
-    g.setColor(theme.gold)
-    g.printf(name, 0, 440, 1920, "center")
+    g.setColor(1, 1, 1, math.min(1, msgTimer))
+    g.printf(msg, 0, 470, 1920, "center")
+  elseif state == "aim" and strokes == 0 then
+    g.setFont(ui.font(theme.fontSmall))
+    g.setColor(theme.quiet)
+    g.printf("drag back from the ball, let go to hit", 0, 1044, 1920, "center")
   end
 
   if state == "done" then
-    g.setColor(0, 0, 0, 0.72)
-    g.rectangle("fill", 0, 0, 1920, 1080)
-    g.setFont(ui.font(theme.fontHuge))
-    g.setColor(theme.gold)
-    g.printf("ROUND COMPLETE", 0, 400, 1920, "center")
     g.setFont(ui.font(theme.fontBig))
     g.setColor(1, 1, 1)
-    local sign2 = total > 0 and "+" or ""
-    g.printf(total == 0 and "EVEN PAR" or (sign2 .. total .. " for the round"),
-             0, 520, 1920, "center")
-    g.printf("Press a button to play again", 0, 620, 1920, "center")
-  end
-
-  -- controls, permanently on screen. He should never have to remember.
-  g.setFont(ui.font(theme.fontSmall - 4))
-  g.setColor(1, 1, 1, 0.6)
-  if padUsed then
-    g.printf("LEFT/RIGHT aim    DOWN pull back    A hit", 0, 1044, 1920, "center")
-  else
-    g.printf("drag back from the ball, let go to hit", 0, 1044, 1920, "center")
+    g.printf("ROUND COMPLETE", 0, 430, 1920, "center")
+    g.setFont(ui.font(theme.fontMid))
+    g.printf((total == 0 and "EVEN" or ((total > 0 and "+" or "") .. total)) ..
+             " for 22 holes", 0, 510, 1920, "center")
+    g.printf("press A to play again", 0, 570, 1920, "center")
   end
 end
 
+-- The ball's world matrix, straight from the solver's quaternion. This is
+-- the whole point of simulating in 3D: the roll is not derived from travel
+-- distance, it IS the body's orientation.
+local function ballMatrix()
+  local x, y, z = b3.body_position(ballBody)
+  local qx, qy, qz, qw = b3.body_rotation(ballBody)
+  local xx, yy, zz = qx * qx, qy * qy, qz * qz
+  local xy, xz, yz = qx * qy, qx * qz, qy * qz
+  local wx, wy, wz = qw * qx, qw * qy, qw * qz
+  return dream.mat4({
+    1 - 2 * (yy + zz), 2 * (xy - wz),     2 * (xz + wy),     x / U,
+    2 * (xy + wz),     1 - 2 * (xx + zz), 2 * (yz - wx),     y / U,
+    2 * (xz - wy),     2 * (yz + wx),     1 - 2 * (xx + yy), z / U,
+    0,                 0,                 0,                 1,
+  })
+end
+
 function love.draw()
-  course.draw(level, t)
+  love.graphics.clear(0.46, 0.66, 0.88, 1)
+
+  -- CAMERA. The course is 1500x1000px; at fov 52 an eye 1490px up frames
+  -- its width with room for the rough. The eye sits in front of the green
+  -- and aims at its middle, which leans the view just enough for the rails
+  -- to show their side faces without skewing the course into a trapezoid.
+  local cx, cy = 960, 540
+  local cam = dream:newCamera(camWorld(
+    dream.vec3(cx / U, 1490 / U, (cy + 360) / U),
+    dream.vec3(cx / U, 0, cy / U)))
+  cam:setFov(52)
+
+  dream:prepare()
+  -- LIGHTS GO HERE, NOT IN love.load: prepare() clears the light list every
+  -- frame, so anything registered at load time is wiped before the first
+  -- draw and the whole scene renders unlit.
+  dream:addNewLight("point", dream.vec3(cx / U - 3.4, 7.6, cy / U - 2.6),
+                    dream.vec3(1.0, 0.97, 0.90), 90)
+  dream:addNewLight("point", dream.vec3(cx / U + 4.4, 5.4, cy / U + 3.4),
+                    dream.vec3(0.58, 0.70, 0.95), 34)
+
+  course.draw()
+  dream:draw(course.ballMesh(), ballMatrix())
+  dream:present(cam)
+
+  -- ── 2D overlays ─────────────────────────────────────────────────────
+  love.graphics.setDepthMode()
   drawAim()
   fx.drawTrail(BALL_R)
-  drawBall()
   fx.draw()
   fx.drawPops(ui.font(theme.fontBig))
   drawHUD()

@@ -1,442 +1,385 @@
--- course.lua - draws the hole.
+-- course.lua - a hole, as real 3D geometry AND real 3D collision.
 --
--- VECTOR, FROM THE COLLISION GEOMETRY ITSELF. The original game drew a
--- backdrop PNG per hole and kept the collision shapes invisible behind it;
--- this draws the shapes. Two things follow that are worth the trouble:
+-- One source of truth. Every entity in levels.lua produces BOTH a mesh and
+-- a Box3D shape from the same numbers, so what you see is exactly what the
+-- ball hits. The previous build kept a 2D Box2D world beside a 3D render
+-- and derived the ball's spin from how far it had travelled; that is the
+-- thing this file exists to stop doing.
 --
---   * what you see IS what you hit. A backdrop can disagree with its
---     collision -- the original has walls whose art and body differ by a
---     pixel or two -- and the player has no way to tell which is real.
---   * it stays sharp at any resolution, and the 22 backdrops (a megabyte
---     of PNG drawn for a 1500x1000 canvas) are not shipped at all.
+-- THE MAPPING. Level data is in cart pixels: x right, y DOWN, on a
+-- 1500x1000 course offset to (210, 40). The world is x right, y UP,
+-- z toward the bottom of the screen:
 --
--- Everything here is flat 2D drawing with a consistent light from the
--- upper left, which is the same direction the ball texture was baked with.
+--     world_x = (px - 960) / U
+--     world_z = (py - 540) / U
+--     world_y = height above the green
+--
+-- Physics runs in PIXELS, not world units: b3.set_meter maps them, and
+-- keeping the simulation in the level data's own units means the 22 hole
+-- layouts need no rescaling and the tuning numbers stay readable.
 
-local jewels_unused = nil   -- (placeholder removed)
+local dream = require("3DreamEngine.init")
+local art = require("art")
 
 local M = {}
 
--- ── palette ───────────────────────────────────────────────────────────
--- Greens are separated in LIGHTNESS as well as hue so the course reads
--- for a colour-blind player: fairway mid, rough dark, water dark-blue,
--- sand pale. The same rule as the jewels.
-local C = {
-  fairway   = {0.24, 0.55, 0.26},
-  fairway2  = {0.27, 0.60, 0.29},   -- the mow stripe
-  rough     = {0.15, 0.36, 0.18},
-  wallTop   = {0.52, 0.40, 0.26},   -- timber, lit
-  wallSide  = {0.31, 0.23, 0.14},   -- timber, shaded
-  wallEdge  = {0.20, 0.15, 0.09},
-  water     = {0.11, 0.35, 0.62},
-  waterLite = {0.24, 0.55, 0.85},
-  sand      = {0.86, 0.78, 0.55},
-  sandDark  = {0.72, 0.63, 0.42},
-  zone      = {0.95, 0.75, 0.20},   -- impulse pads
-  cup       = {0.05, 0.05, 0.06},
-  cupRim    = {0.85, 0.85, 0.88},
-  flagPole  = {0.90, 0.90, 0.92},
-  flag      = {0.90, 0.20, 0.22},
-}
-M.COLORS = C
+local U = 120                       -- px per world unit
+M.U = U
 
--- Shadows all fall the same way, from a light up and to the left. A
--- consistent offset is most of what makes flat shapes read as solid.
-local SHX, SHY = 7, 9
+local BALL_R = 11.5                 -- ball radius, in cart pixels
+M.BALL_R = BALL_R
 
--- ── scratch buffers ───────────────────────────────────────────────────
--- Pooled: a hole redraws 40-odd polygons every frame, and building a
--- fresh point table for each is the steady allocation drip that turns
--- into a GC hitch mid-putt.
-local poly = {}
-local function polyFrom(e, ox, oy, scale)
-  local p, n = e.points, 0
-  scale = scale or 1
-  for i = 1, #p, 2 do
-    n = n + 1; poly[n] = e.x + p[i] * scale + (ox or 0)
-    n = n + 1; poly[n] = e.y + p[i + 1] * scale + (oy or 0)
-  end
-  for i = n + 1, #poly do poly[i] = nil end
-  return poly
-end
+-- Heights, in cart pixels so they sit in the same units as the layouts.
+-- Rail height. Tall enough that the SIDE faces are a real part of the
+-- picture from this camera: at 34 the rails read as flat tape on the
+-- grass, because almost all of what you see is their top face.
+local WALL_H  = 52                  -- timber rail height
+local FLOOR_T = 10                  -- how thick the green's slab is
+local CUP_R   = BALL_R * 2.2        -- the cup, sized off the BALL
+M.CUP_R = CUP_R
 
-local function setC(c, a) love.graphics.setColor(c[1], c[2], c[3], a or 1) end
+local function wx(px) return (px - 960) / U end
+local function wz(py) return (py - 540) / U end
+M.wx, M.wz = wx, wz
 
--- ── ground ────────────────────────────────────────────────────────────
---
--- The fairway is BAKED ONCE into a canvas: mow stripes, a fine grass
--- noise, and a soft edge darkening. Baking matters because the texture is
--- thousands of tiny marks -- drawing them per frame would cost more than
--- the rest of the game put together, and they never change.
---
--- Grass noise is what stops a green rectangle looking like a green
--- rectangle. Stripes alone read as a flag; stripes plus per-blade
--- variation read as turf.
+-- ── materials ─────────────────────────────────────────────────────────
 
-local groundCanvas = nil
+local mat = {}
+local tex = {}
 
-local function bakeGround(x, y, w, h)
-  local g = love.graphics
-  groundCanvas = g.newCanvas(1920, 1080)
-  groundCanvas:renderTo(function()
-    g.clear(C.rough[1], C.rough[2], C.rough[3], 1)
+function M.initMaterials()
+  tex = art.makeTextures()
 
-    -- the rough, with its own coarser noise so the border is not flat
-    for i = 1, 2600 do
-      local rx = love.math.random() * 1920
-      local ry = love.math.random() * 1080
-      local v = (love.math.random() - 0.5) * 0.07
-      g.setColor(C.rough[1] + v, C.rough[2] + v * 1.3, C.rough[3] + v)
-      g.rectangle("fill", rx, ry, 3, 2)
-    end
-
-    -- fairway base
-    setC(C.fairway)
-    g.rectangle("fill", x, y, w, h)
-
-    -- mow stripes, alternating direction of cut
-    setC(C.fairway2)
-    local stripe = 68
-    for sx = 0, math.ceil(w / stripe) - 1, 2 do
-      g.rectangle("fill", x + sx * stripe, y, math.min(stripe, w - sx * stripe), h)
-    end
-
-    -- per-blade noise across the whole fairway. Two passes: dark flecks
-    -- for depth, light flecks for the sheen the mower leaves.
-    for i = 1, 9000 do
-      local rx = x + love.math.random() * w
-      local ry = y + love.math.random() * h
-      local v = (love.math.random() - 0.5) * 0.085
-      local onStripe = (math.floor((rx - x) / stripe) % 2 == 0)
-      local base = onStripe and C.fairway2 or C.fairway
-      g.setColor(base[1] + v, base[2] + v * 1.25, base[3] + v)
-      g.rectangle("fill", rx, ry, 2, love.math.random() < 0.5 and 3 or 2)
-    end
-
-    -- the fairway edge sits slightly below the rough, so darken inward
-    for i = 1, 14 do
-      g.setColor(0, 0, 0, 0.028)
-      g.rectangle("line", x + i, y + i, w - i * 2, h - i * 2)
-    end
-  end)
-end
-
-function M.drawGround(x, y, w, h)
-  local g = love.graphics
-  if not groundCanvas then bakeGround(x, y, w, h) end
-  g.setColor(1, 1, 1, 1)
-  g.draw(groundCanvas, 0, 0)
-end
-
--- ── hazards ───────────────────────────────────────────────────────────
---
--- WHY THESE GO THROUGH A CANVAS.
---
--- The source levels approximate a curved lake with a STACK OF RECTANGLES
--- of decreasing width -- hole 18's water is 37 separate pieces. Drawing
--- them individually is honest to the collision but looks like a
--- staircase, and any per-piece edge treatment (a rim, a ripple) lands in
--- the middle of the shape where two pieces abut.
---
--- So each hazard KIND is composited into an offscreen canvas first: fill
--- every piece flat, and the union is one silhouette with no internal
--- seams. The rim and the ripples are then drawn against THAT, and clipped
--- to it, which is what makes 37 rectangles read as one lake.
---
--- One canvas per kind, built once per hole rather than per frame -- the
--- geometry never moves, so rebuilding it every frame would be 37 fills a
--- frame for a picture that never changes.
-
-local hazCanvas = {}      -- kind -> canvas
-local hazBuilt = nil      -- the level these were built for
-
-local function fillPiece(e)
-  local g = love.graphics
-  if e.kind == "circle" then
-    g.circle("fill", e.x, e.y, e.r)
-  elseif e.kind == "rect" then
-    -- a half-pixel of overlap closes the hairline seams between abutting
-    -- rects, which otherwise show as bright lines through the lake
-    g.rectangle("fill", e.x - e.hw - 0.5, e.y - e.hh - 0.5,
-                e.hw * 2 + 1, e.hh * 2 + 1)
-  else
-    g.polygon("fill", polyFrom(e))
-  end
-end
-
-local function buildHazards(level)
-  local g = love.graphics
-  hazCanvas = {}
-  for _, kind in ipairs({ "water", "sand" }) do
-    local any = false
-    for _, e in ipairs(level.entities) do
-      if e[kind] then any = true break end
-    end
-    if any then
-      local cv = g.newCanvas(1920, 1080)
-      cv:renderTo(function()
-        g.clear(0, 0, 0, 0)
-        g.setColor(1, 1, 1, 1)
-        for _, e in ipairs(level.entities) do
-          if e[kind] then fillPiece(e) end
-        end
-      end)
-      hazCanvas[kind] = cv
-      if kind == "water" then
-        hazCanvas.waterSurf = g.newCanvas(1920, 1080)
-      end
-    end
-  end
-  hazBuilt = level
-end
-
--- Draw the merged hazard.
---
--- The ripples are composited INTO the water canvas rather than stencilled
--- over it. A stencil cannot help here: a textured quad writes the stencil
--- buffer for its whole RECTANGLE, not for the shape in its alpha channel,
--- so masking from a canvas would need an alpha-discard in the shader.
--- Drawing them into the canvas gets the clipping for free from ordinary
--- alpha blending, and costs one canvas pass per frame instead of two
--- stencil passes.
-local function drawHazard(kind, level, t)
-  local cv = hazCanvas[kind]
-  if not cv then return end
-  local g = love.graphics
-
-  if kind == "water" then
-    -- Repaint the animated surface into a second canvas that carries the
-    -- lake's silhouette: draw the mask, then the ripples MULTIPLIED down
-    -- to the mask's alpha by drawing them with the mask as a stencil in
-    -- the only way that works here -- inside the canvas, where anything
-    -- outside the already-painted shape simply lands on transparent
-    -- pixels and is discarded when the canvas is composited.
-    local surf = hazCanvas.waterSurf
-    surf:renderTo(function()
-      g.clear(0, 0, 0, 0)
-      setC(C.water)
-      g.draw(cv, 0, 0)
-      -- ripples: only the pixels that land ON the lake survive, because
-      -- the canvas is transparent everywhere else and these are drawn
-      -- with the lake already down
-      g.setBlendMode("add")
-      g.setColor(C.waterLite[1] * 0.30, C.waterLite[2] * 0.30,
-                 C.waterLite[3] * 0.30, 1)
-      g.setLineWidth(3)
-      for i = 0, 13 do
-        local yy = 40 + i * 78 + math.sin(t * 0.7 + i) * 6
-        local xo = math.sin(t * 0.45 + i * 0.9) * 90
-        g.line(160 + xo, yy, 1760 + xo, yy)
-      end
-      g.setBlendMode("alpha")
-    end)
-    g.setColor(1, 1, 1, 1)
-    g.draw(surf, 0, 0)
-  else
-    -- sand: a darker offset copy under a pale fill reads as a lip
-    g.setColor(C.sandDark[1], C.sandDark[2], C.sandDark[3], 1)
-    g.draw(cv, 0, 4)
-    setC(C.sand); g.draw(cv, 0, 0)
-  end
-end
-
--- An impulse zone: a conveyor or slope that pushes the ball. Drawn as
--- chevrons POINTING THE WAY IT PUSHES, because a coloured pad that moves
--- your ball without explaining itself is the most annoying thing a mini
--- golf hole can contain.
-function M.drawZone(e, t)
-  local g = love.graphics
-  g.setColor(C.zone[1], C.zone[2], C.zone[3], 0.22)
-  if e.kind == "circle" then
-    g.circle("fill", e.x, e.y, e.r)
-  elseif e.kind == "rect" then
-    g.rectangle("fill", e.x - e.hw, e.y - e.hh, e.hw * 2, e.hh * 2)
-  else
-    g.polygon("fill", polyFrom(e))
+  -- Textures go on the MESH, not only the material: 3DreamEngine assigns
+  -- through the material, but this engine's 3D meshes carry their own
+  -- texture and the material's sampler is never read. Both are set, and
+  -- buildMesh() below does the mesh half.
+  local function texMat(name, tx, rough, metal)
+    local m = dream:newMaterial(name)
+    m:setColor(1, 1, 1, 1)
+    m:setEmissionTexture(tx)
+    -- emission = texel * factor + colour, so the COLOUR stays black or it
+    -- is added to every texel and washes the texture out to white
+    m:setEmission(0, 0, 0)
+    m:setEmissionFactor(1, 1, 1)
+    m:setRoughness(rough or 0.9)
+    m:setMetallic(metal or 0)
+    return m
   end
 
-  local ang = math.rad(e.impulseAngle or 0)
-  local dx, dy = math.cos(ang), math.sin(ang)
-  local span = (e.kind == "circle") and e.r or math.max(e.hw or 30, e.hh or 30)
-  g.setColor(C.zone[1], C.zone[2], C.zone[3], 0.75)
-  g.setLineWidth(4)
-  for i = 0, 2 do
-    -- chevrons crawl along the push direction, so the motion itself
-    -- shows which way the pad throws you
-    local slide = ((t * 60 + i * 24) % 72) - 36
-    local cx = e.x + dx * slide
-    local cy = e.y + dy * slide
-    local px, py = -dy, dx
-    local sz = math.min(span * 0.5, 16)
-    g.line(cx - px * sz - dx * sz, cy - py * sz - dy * sz, cx, cy)
-    g.line(cx + px * sz - dx * sz, cy + py * sz - dy * sz, cx, cy)
-  end
+  mat.turf    = texMat("turf",  tex.turf,  0.95)
+  mat.edge    = texMat("edge",  tex.edge,  0.7)
+  mat.stone   = texMat("stone", tex.stone, 0.85)
+  mat.sand    = texMat("sand",  tex.sand,  1.0)
+  mat.water   = texMat("water", tex.water, 0.15, 0.2)
+  mat.zone    = texMat("zone",  tex.zone,  0.6)
+  mat.ball    = texMat("ball",  tex.ball,  0.25)
+  mat.flag    = texMat("flag",  tex.flag,  0.9)
+
+  -- The cup is a dark hole. No texture: it is the absence of surface.
+  mat.cup = dream:newMaterial("cup")
+  mat.cup:setColor(0.02, 0.02, 0.03, 1)
+  mat.cup:setEmission(0.02, 0.02, 0.03)
+  mat.cup:setRoughness(1)
+  mat.cup:setCullMode("none")
+
+  return mat
 end
 
--- ── walls ─────────────────────────────────────────────────────────────
---
--- Timber rails: a cast shadow, a shaded body, a lit top face, wood grain
--- along the length, and a bright top edge. Six flat shapes that together
--- read as a plank with height and a light on it.
---
--- The grain runs along the LONG axis, which is what makes a rail look
--- like sawn timber rather than a brown box -- grain across the short side
--- would read as a stack of coins.
+-- ── mesh helpers ──────────────────────────────────────────────────────
 
-local WOOD_SEED = 12345
-local function grainLines(e)
-  local g = love.graphics
-  if e.kind ~= "rect" then return end
-  local horiz = e.hw > e.hh
-  g.setLineWidth(1)
-  local n = math.min(14, math.floor((horiz and e.hh or e.hw) / 5))
+-- Every mesh goes through here so the texture lands on the mesh as well as
+-- the material. Missing this is invisible in every check except the
+-- rendered picture: the shader compiles, the uniform sends, and the
+-- surface draws flat white.
+local function finish(m, texture)
+  m:create()
+  if texture and m.mesh and m.mesh.setTexture then
+    m.mesh:setTexture(texture)
+  end
+  return m
+end
+
+-- A box in PIXEL space, converted to world units on the way in. uvScale
+-- ties texture repeats to real size, so a long rail does not smear.
+local function buildBox(material, texture, cx, cy, cz, hx, hy, hz, uvScale)
+  local m = dream:newMesh(material)
+  local mv = m:getOrCreateBuffer("vertices")
+  local mn = m:getOrCreateBuffer("normals")
+  local mt = m:getOrCreateBuffer("texCoords")
+  local mf = m:getOrCreateBuffer("faces")
+  local s = uvScale or (1 / 128)
+  local x, y, z = cx / U, cy / U, cz / U
+  local ax, ay, az = hx / U, hy / U, hz / U
+  local faces = {
+    { { 0, 1, 0}, {-ax, ay,-az}, { ax, ay,-az}, { ax, ay, az}, {-ax, ay, az}, hx, hz },
+    { { 0,-1, 0}, {-ax,-ay, az}, { ax,-ay, az}, { ax,-ay,-az}, {-ax,-ay,-az}, hx, hz },
+    { { 0, 0, 1}, {-ax,-ay, az}, { ax,-ay, az}, { ax, ay, az}, {-ax, ay, az}, hx, hy },
+    { { 0, 0,-1}, { ax,-ay,-az}, {-ax,-ay,-az}, {-ax, ay,-az}, { ax, ay,-az}, hx, hy },
+    { { 1, 0, 0}, { ax,-ay, az}, { ax,-ay,-az}, { ax, ay,-az}, { ax, ay, az}, hz, hy },
+    { {-1, 0, 0}, {-ax,-ay,-az}, {-ax,-ay, az}, {-ax, ay, az}, {-ax, ay,-az}, hz, hy },
+  }
+  local base = 0
+  for _, f in ipairs(faces) do
+    local n = f[1]
+    local su, sv = f[6] * 2 * s, f[7] * 2 * s
+    local uv = { { 0, 0 }, { su, 0 }, { su, sv }, { 0, sv } }
+    for i = 2, 5 do
+      mv:append({ x + f[i][1], y + f[i][2], z + f[i][3] })
+      mn:append({ n[1], n[2], n[3] })
+      mt:append(uv[i - 1])
+    end
+    mf:append({ base + 1, base + 2, base + 3 })
+    mf:append({ base + 1, base + 3, base + 4 })
+    base = base + 4
+  end
+  return finish(m, texture)
+end
+M.buildBox = buildBox
+
+-- A flat polygon, fanned from its first vertex. This winding is the one
+-- that demonstrably renders here, so the cup and every hazard use it.
+local function buildPoly(material, texture, pts, py, cx, cz, uvScale)
+  local m = dream:newMesh(material)
+  local mv = m:getOrCreateBuffer("vertices")
+  local mn = m:getOrCreateBuffer("normals")
+  local mt = m:getOrCreateBuffer("texCoords")
+  local mf = m:getOrCreateBuffer("faces")
+  local s = uvScale or (1 / 128)
+  local n = #pts / 2
   for i = 1, n do
-    -- deterministic offsets so the grain does not crawl between frames
-    local seed = (e.x * 7 + e.y * 13 + i * 31) % 97 / 97
-    local a = 0.06 + seed * 0.10
-    g.setColor(0.16, 0.11, 0.06, a)
-    if horiz then
-      local yy = e.y - e.hh + (i / (n + 1)) * e.hh * 2
-      local inset = e.hw * (0.02 + seed * 0.12)
-      g.line(e.x - e.hw + inset, yy, e.x + e.hw - inset, yy)
-    else
-      local xx = e.x - e.hw + (i / (n + 1)) * e.hw * 2
-      local inset = e.hh * (0.02 + seed * 0.12)
-      g.line(xx, e.y - e.hh + inset, xx, e.y + e.hh - inset)
+    local px, pz = pts[i * 2 - 1], pts[i * 2]
+    mv:append({ (cx + px) / U, py / U, (cz + pz) / U })
+    mn:append({ 0, 1, 0 })
+    mt:append({ px * s, pz * s })
+  end
+  for i = 2, n - 1 do mf:append({ 1, i, i + 1 }) end
+  return finish(m, texture)
+end
+M.buildPoly = buildPoly
+
+local function buildDisc(material, texture, r, py, cx, cz, seg)
+  local pts = {}
+  for j = 0, (seg or 24) - 1 do
+    local a = 2 * math.pi * j / (seg or 24)
+    pts[#pts + 1] = math.cos(a) * r
+    pts[#pts + 1] = math.sin(a) * r
+  end
+  return buildPoly(material, texture, pts, py, cx, cz, 1 / (r * 2))
+end
+
+local function buildSphere(material, texture, r, seg)
+  local m = dream:newMesh(material)
+  local mv = m:getOrCreateBuffer("vertices")
+  local mn = m:getOrCreateBuffer("normals")
+  local mt = m:getOrCreateBuffer("texCoords")
+  local mf = m:getOrCreateBuffer("faces")
+  local rr = r / U
+  for i = 0, seg do
+    local phi = math.pi * i / seg
+    for j = 0, seg do
+      local th = 2 * math.pi * j / seg
+      local x = math.sin(phi) * math.cos(th)
+      local y = math.cos(phi)
+      local z = math.sin(phi) * math.sin(th)
+      mv:append({ x * rr, y * rr, z * rr })
+      mn:append({ x, y, z })
+      mt:append({ j / seg, i / seg })
     end
   end
+  for i = 0, seg - 1 do
+    for j = 0, seg - 1 do
+      local a = i * (seg + 1) + j + 1
+      local b = a + seg + 1
+      mf:append({ a, b, a + 1 })
+      mf:append({ a + 1, b, b + 1 })
+    end
+  end
+  return finish(m, texture)
+end
+M.buildSphere = buildSphere
+
+-- ── building a hole ───────────────────────────────────────────────────
+
+local meshes = {}          -- { mesh, x, y, z }
+local ballMesh
+local bodies = {}          -- every static body, freed on rebuild
+
+-- Frees the previous hole. The renderer has 64 mesh slots and a hole uses
+-- a dozen, so without this the sixth hole fails to build one and the cart
+-- dies with a Lua error mid-game.
+local function freeMeshes()
+  for _, e in ipairs(meshes) do
+    local mesh = e[1]
+    if mesh and mesh.mesh and mesh.mesh.release then
+      mesh.mesh:release()
+      mesh.mesh = nil
+    end
+  end
+  meshes = {}
 end
 
-function M.drawWall(e)
-  local g = love.graphics
-  -- cast shadow, soft: two offset copies at low alpha beat one hard edge
-  g.setColor(0, 0, 0, 0.20)
-  if e.kind == "rect" then
-    g.rectangle("fill", e.x - e.hw + SHX * 1.5, e.y - e.hh + SHY * 1.5, e.hw * 2, e.hh * 2)
-  elseif e.kind == "circle" then
-    g.circle("fill", e.x + SHX * 1.5, e.y + SHY * 1.5, e.r)
-  else
-    g.polygon("fill", polyFrom(e, SHX * 1.5, SHY * 1.5))
-  end
-  g.setColor(0, 0, 0, 0.26)
-  if e.kind == "rect" then
-    g.rectangle("fill", e.x - e.hw + SHX, e.y - e.hh + SHY, e.hw * 2, e.hh * 2)
-  elseif e.kind == "circle" then
-    g.circle("fill", e.x + SHX, e.y + SHY, e.r)
-  else
-    g.polygon("fill", polyFrom(e, SHX, SHY))
-  end
-
-  setC(C.wallSide)
-  if e.kind == "rect" then
-    g.rectangle("fill", e.x - e.hw, e.y - e.hh, e.hw * 2, e.hh * 2)
-    setC(C.wallTop)
-    g.rectangle("fill", e.x - e.hw, e.y - e.hh, e.hw * 2, e.hh * 2 - 7)
-    grainLines(e)
-    -- a lit top edge: the single brightest line, where the light hits
-    g.setColor(0.68, 0.55, 0.36, 0.85); g.setLineWidth(3)
-    g.line(e.x - e.hw, e.y - e.hh + 1.5, e.x + e.hw, e.y - e.hh + 1.5)
-    setC(C.wallEdge); g.setLineWidth(2)
-    g.rectangle("line", e.x - e.hw, e.y - e.hh, e.hw * 2, e.hh * 2)
-  elseif e.kind == "circle" then
-    g.circle("fill", e.x, e.y, e.r)
-    setC(C.wallTop); g.circle("fill", e.x, e.y - 3, e.r * 0.92)
-    g.setColor(0.68, 0.55, 0.36, 0.7); g.setLineWidth(3)
-    g.arc("line", "open", e.x, e.y - 3, e.r * 0.92, math.pi * 1.12, math.pi * 1.88)
-    setC(C.wallEdge); g.setLineWidth(2); g.circle("line", e.x, e.y, e.r)
-  else
-    g.polygon("fill", polyFrom(e))
-    setC(C.wallTop); g.polygon("fill", polyFrom(e, 0, -5))
-    setC(C.wallEdge); g.setLineWidth(2); g.polygon("line", polyFrom(e))
-  end
+-- A static body with one box shape, in pixel space.
+-- Body type is a NUMBER in this API: 0 static, 1 kinematic, 2 dynamic.
+local function staticBox(world, cx, cy, cz, hx, hy, hz, friction, restitution)
+  local b = b3.body_new(world, cx, cy, cz, 0)
+  local s = b3.shape_box(b, hx, hy, hz)
+  b3.shape_set_material(s, friction or 0.7, restitution or 0.35)
+  bodies[#bodies + 1] = b
+  return b
 end
 
--- ── the cup ───────────────────────────────────────────────────────────
---
--- Drawn LARGER than its 6px sensor on purpose: the sensor is honest
--- physics, but 6px on a TV across a room is invisible, and the player
--- aims at what they can see. main.lua's own hit test is matched to the
--- drawn size, so what looks like the hole IS the hole.
+-- Build one hole: geometry, collision, and where the ball and cup are.
+function M.build(world, level)
+  freeMeshes()
+  bodies = {}
 
-function M.drawCup(e, t)
-  local g = love.graphics
-  local R = math.max(e.r * 2.8, 18)
+  local X0, Y0 = 210, 40
+  local W, H = 1500, 1000
+  local cx, cy = X0 + W / 2, Y0 + H / 2
 
-  -- a ground shadow puts the cup IN the turf
-  g.setColor(0, 0, 0, 0.22)
-  g.ellipse("fill", e.x + 2, e.y + 6, R * 1.30, R * 1.02)
+  -- THE GREEN. A slab with its top face at y=0, so every height in the
+  -- level is measured from the putting surface.
+  meshes[#meshes + 1] = { buildBox(mat.turf, tex.turf, cx, -FLOOR_T / 2, cy,
+                                   W / 2, FLOOR_T / 2, H / 2, 1 / 96), 0, 0, 0 }
+  staticBox(world, cx, -FLOOR_T / 2, cy, W / 2, FLOOR_T / 2, H / 2, 0.85, 0.2)
 
-  -- the liner, in three bands so the hole has visible depth: dark bottom,
-  -- a lit far wall, and a bright rim on the near side only. That
-  -- asymmetry is the entire depth cue.
-  setC(C.cup)
-  g.ellipse("fill", e.x, e.y, R, R * 0.84)
-  g.setColor(0.13, 0.13, 0.15, 1)
-  g.ellipse("fill", e.x, e.y - R * 0.14, R * 0.88, R * 0.62)
-  g.setColor(0.03, 0.03, 0.04, 1)
-  g.ellipse("fill", e.x, e.y + R * 0.10, R * 0.72, R * 0.48)
+  -- the stone apron the green sits on, purely to frame it
+  meshes[#meshes + 1] = { buildBox(mat.stone, tex.stone, cx, -FLOOR_T - 22, cy,
+                                   W / 2 + 150, 22, H / 2 + 120, 1 / 128), 0, 0, 0 }
 
-  setC(C.cupRim, 0.6); g.setLineWidth(3)
-  g.arc("line", "open", e.x, e.y, R, math.pi * 1.05, math.pi * 1.95)
-  g.setColor(1, 1, 1, 0.18); g.setLineWidth(2)
-  g.arc("line", "open", e.x, e.y, R, math.pi * 0.1, math.pi * 0.9)
-
-  -- ── flag ──
-  -- Leaning, with the pole casting a shadow and the cloth rippling in
-  -- two waves rather than one, so it looks caught by wind instead of
-  -- wobbling on a hinge.
-  local sway = math.sin(t * 1.15) * 4
-  local top = e.y - 112
-  g.setColor(0, 0, 0, 0.20); g.setLineWidth(5)
-  g.line(e.x + 8, e.y + 3, e.x + sway + 14, top + 8)
-
-  setC(C.flagPole); g.setLineWidth(5)
-  g.line(e.x, e.y, e.x + sway, top)
-  g.setColor(1, 1, 1, 0.9); g.setLineWidth(2)
-  g.line(e.x - 1.5, e.y, e.x + sway - 1.5, top)
-  -- the finial
-  g.setColor(0.95, 0.9, 0.5); g.circle("fill", e.x + sway, top - 4, 5)
-
-  -- cloth as a strip of quads, each following the wave
-  local segs = 7
-  local L, H = 62, 34
-  for i = 0, segs - 1 do
-    local u0, u1 = i / segs, (i + 1) / segs
-    local w0 = math.sin(t * 3.1 + u0 * 5.2) * (5 + u0 * 11)
-    local w1 = math.sin(t * 3.1 + u1 * 5.2) * (5 + u1 * 11)
-    -- darker where the cloth turns away: fakes the fold
-    local shade = 0.78 + 0.22 * math.cos(t * 3.1 + u0 * 5.2)
-    g.setColor(C.flag[1] * shade, C.flag[2] * shade, C.flag[3] * shade)
-    g.polygon("fill",
-      e.x + sway + u0 * L, top + w0,
-      e.x + sway + u1 * L, top + w1,
-      e.x + sway + u1 * L, top + w1 + H * (1 - u1 * 0.45),
-      e.x + sway + u0 * L, top + w0 + H * (1 - u0 * 0.45))
-  end
-end
-
--- Draw one hole. Order matters: hazards under walls, cup above the
--- ground but below the ball, which main.lua draws last.
-function M.draw(level, t)
-  local g = love.graphics
-  -- BEFORE the ground: building a canvas binds a render target, and doing
-  -- that halfway through the frame would drop whatever had been drawn so
-  -- far into the wrong buffer.
-  if hazBuilt ~= level then buildHazards(level) end
-  M.drawGround(210, 40, 1500, 1000)
-  drawHazard("water", level, t)
-  drawHazard("sand", level, t)
-
+  local goal, start
   for _, e in ipairs(level.entities) do
-    if e.id ~= "ball" and e.id ~= "goal" and not e.water and not e.sand then
-      if e.impulse then M.drawZone(e, t)
-      elseif not e.sensor then M.drawWall(e)
+    if e.id == "ball" then
+      start = { x = e.x, y = e.y }
+
+    elseif e.id == "goal" then
+      goal = { x = e.x, y = e.y }
+
+    elseif e.water then
+      -- Water sits BELOW the surface and is a trigger, not a wall.
+      if e.kind == "rect" then
+        meshes[#meshes + 1] = { buildBox(mat.water, tex.water, e.x, -6, e.y,
+                                         e.hw, 2, e.hh, 1 / 160), 0, 0, 0 }
+      elseif e.kind == "poly" then
+        meshes[#meshes + 1] = { buildPoly(mat.water, tex.water, e.points, -6,
+                                          e.x, e.y, 1 / 160), 0, 0, 0 }
+      end
+
+    elseif e.sand then
+      if e.kind == "rect" then
+        meshes[#meshes + 1] = { buildBox(mat.sand, tex.sand, e.x, -3, e.y,
+                                         e.hw, 2, e.hh, 1 / 112), 0, 0, 0 }
+      elseif e.kind == "poly" then
+        meshes[#meshes + 1] = { buildPoly(mat.sand, tex.sand, e.points, -3,
+                                          e.x, e.y, 1 / 112), 0, 0, 0 }
+      end
+
+    elseif e.impulse then
+      if e.kind == "rect" then
+        meshes[#meshes + 1] = { buildBox(mat.zone, tex.zone, e.x, 1.5, e.y,
+                                         e.hw, 1, e.hh, 1 / 64), 0, 0, 0 }
+      elseif e.kind == "poly" then
+        meshes[#meshes + 1] = { buildPoly(mat.zone, tex.zone, e.points, 2,
+                                          e.x, e.y, 1 / 64), 0, 0, 0 }
+      end
+
+    elseif not e.sensor then
+      -- TIMBER RAILS: real boxes with real height, both drawn and solid.
+      if e.kind == "rect" then
+        -- 1/104 makes one checker square about 26px, so the pattern is
+        -- the same physical size on every rail rather than repeating more
+        -- times the longer the rail is.
+        meshes[#meshes + 1] = { buildBox(mat.edge, tex.edge, e.x, WALL_H / 2, e.y,
+                                         e.hw, WALL_H / 2, e.hh, 1 / 104), 0, 0, 0 }
+        staticBox(world, e.x, WALL_H / 2, e.y, e.hw, WALL_H / 2, e.hh,
+                  0.5, e.restitution or 0.55)
+      elseif e.kind == "circle" then
+        -- Position in ABSOLUTE pixel space / U, NOT through wx()/wz().
+        -- Those recentre about the middle of the screen, which every other
+        -- mesh here already accounts for by baking absolute coordinates
+        -- into its vertices -- so a sphere placed through them is offset
+        -- twice and ends up off the course, hanging in the sky.
+        meshes[#meshes + 1] = { buildSphere(mat.edge, tex.edge, e.r, 12),
+                                e.x / U, WALL_H / 2 / U, e.y / U }
+        local b = b3.body_new(world, e.x, WALL_H / 2, e.y, 0)
+        local s = b3.shape_sphere(b, e.r)
+        b3.shape_set_material(s, 0.5, e.restitution or 0.55)
+        bodies[#bodies + 1] = b
+      elseif e.kind == "poly" then
+        -- A polygon rail becomes a drawn cap plus a box hull for collision:
+        -- Box3D has no convex-hull-from-points shape, and the layouts'
+        -- polygons are all small wedges where a tight box is honest enough.
+        meshes[#meshes + 1] = { buildPoly(mat.edge, tex.edge, e.points, WALL_H,
+                                          e.x, e.y, 1 / 104), 0, 0, 0 }
+        local minx, maxx, minz, maxz = math.huge, -math.huge, math.huge, -math.huge
+        for i = 1, #e.points / 2 do
+          local px, pz = e.points[i * 2 - 1], e.points[i * 2]
+          minx = math.min(minx, px); maxx = math.max(maxx, px)
+          minz = math.min(minz, pz); maxz = math.max(maxz, pz)
+        end
+        staticBox(world, e.x + (minx + maxx) / 2, WALL_H / 2, e.y + (minz + maxz) / 2,
+                  math.max(2, (maxx - minx) / 2), WALL_H / 2,
+                  math.max(2, (maxz - minz) / 2), 0.5, e.restitution or 0.55)
       end
     end
   end
 
-  for _, e in ipairs(level.entities) do
-    if e.id == "goal" then M.drawCup(e, t) end
+  -- THE CUP, drawn last so it sits over the green rather than under it.
+  if goal then
+    -- The hole is a SHAFT: a dark disc at the bottom plus a ring of wall
+    -- down to it. A disc alone floats -- it reads as a black sticker on
+    -- the grass rather than as somewhere the ball goes -- and the wall is
+    -- what gives it a rim and a shadowed inside.
+    -- SHALLOW. The floor has to stay visible from a camera looking down at
+    -- 20-odd degrees: at 26px deep the green's own surface occludes it and
+    -- the cup renders as a bare ring with grass showing through the middle.
+    local CUP_DEPTH = 7
+    meshes[#meshes + 1] = { buildDisc(mat.cup, nil, CUP_R, -CUP_DEPTH,
+                                      goal.x, goal.y, 28), 0, 0, 0 }
+    local wall = dream:newMesh(mat.cup)
+    local wv = wall:getOrCreateBuffer("vertices")
+    local wn = wall:getOrCreateBuffer("normals")
+    local wt = wall:getOrCreateBuffer("texCoords")
+    local wf = wall:getOrCreateBuffer("faces")
+    local SEG = 28
+    for j = 0, SEG do
+      local a = 2 * math.pi * j / SEG
+      local px, pz = math.cos(a) * CUP_R, math.sin(a) * CUP_R
+      wv:append({ (goal.x + px) / U, 0.6 / U, (goal.y + pz) / U })
+      wn:append({ -math.cos(a), 0, -math.sin(a) })
+      wt:append({ j / SEG, 0 })
+      wv:append({ (goal.x + px) / U, -CUP_DEPTH / U, (goal.y + pz) / U })
+      wn:append({ -math.cos(a), 0, -math.sin(a) })
+      wt:append({ j / SEG, 1 })
+    end
+    for j = 0, SEG - 1 do
+      local a = j * 2 + 1
+      wf:append({ a, a + 1, a + 2 })
+      wf:append({ a + 1, a + 3, a + 2 })
+    end
+    wall:create()
+    meshes[#meshes + 1] = { wall, 0, 0, 0 }
+    -- the pin, beside the hole rather than in it
+    local off = CUP_R + 7
+    meshes[#meshes + 1] = { buildBox(mat.flag, tex.flag, goal.x + off, 34, goal.y,
+                                     2, 34, 2, 1 / 32), 0, 0, 0 }
+    meshes[#meshes + 1] = { buildBox(mat.flag, tex.flag, goal.x + off + 15, 60, goal.y,
+                                     15, 9, 1, 1 / 32), 0, 0, 0 }
+  end
+
+  if not ballMesh then
+    ballMesh = buildSphere(mat.ball, tex.ball, BALL_R, 18)
+  end
+
+  return { start = start, goal = goal }
+end
+
+function M.ballMesh() return ballMesh end
+
+function M.draw()
+  for _, m in ipairs(meshes) do
+    dream:draw(m[1], m[2], m[3], m[4])
   end
 end
 
