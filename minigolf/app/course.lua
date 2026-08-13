@@ -268,6 +268,44 @@ local function batchSphere(fb, cx, cy, cz, r, seg)
   fb.count = base + (seg + 1) * (seg + 1)
 end
 
+-- A solid polygon rail, as a real PRISM: the outline capped at WALL_H plus
+-- a skirt down each edge to the green.
+--
+-- These were drawn as a flat cap only, while collision used a box hull
+-- around the whole outline -- so a 267x161 triangle became a 267x161
+-- invisible wall the ball bounced off with nothing on screen to explain it.
+-- Drawing the sides makes the shape visible, and the collision below is
+-- switched to a set of thin boxes along the outline so it matches what is
+-- drawn rather than the bounding box.
+local function batchPolyPrism(top, side, pts, y, cx, cz, uvScale)
+  flatPoly(top, pts, y, cx, cz, uvScale)
+  local n = #pts / 2
+  local s = uvScale or (1 / 128)
+  for i = 1, n do
+    local j = (i % n) + 1
+    local x1, z1 = pts[i * 2 - 1], pts[i * 2]
+    local x2, z2 = pts[j * 2 - 1], pts[j * 2]
+    local base = side.count
+    local len = math.sqrt((x2 - x1) ^ 2 + (z2 - z1) ^ 2)
+    side.v:append({ (cx + x1) / U, y / U, (cz + z1) / U })
+    side.v:append({ (cx + x2) / U, y / U, (cz + z2) / U })
+    side.v:append({ (cx + x2) / U, 0, (cz + z2) / U })
+    side.v:append({ (cx + x1) / U, 0, (cz + z1) / U })
+    -- outward normal of this edge, in the ground plane
+    local nx, nz = (z2 - z1), -(x2 - x1)
+    local nl = math.sqrt(nx * nx + nz * nz)
+    if nl > 0 then nx, nz = nx / nl, nz / nl end
+    for _ = 1, 4 do side.n:append({ nx, 0, nz }) end
+    side.t:append({ 0, 0 })
+    side.t:append({ len * s, 0 })
+    side.t:append({ len * s, y * s })
+    side.t:append({ 0, y * s })
+    side.f:append({ base + 1, base + 2, base + 3 })
+    side.f:append({ base + 1, base + 3, base + 4 })
+    side.count = base + 4
+  end
+end
+
 local function finishFlat(fb, texture, out)
   if fb.count > 0 then
     out[#out + 1] = { finish(fb.mesh, texture), 0, 0, 0 }
@@ -396,6 +434,7 @@ M.buildSphere = buildSphere
 -- ── building a hole ───────────────────────────────────────────────────
 
 local meshes = {}          -- { mesh, x, y, z }
+local spinners = {}        -- moving obstacles, rotated every frame
 local ballMesh
 local bodies = {}          -- every static body, freed on rebuild
 
@@ -427,6 +466,7 @@ end
 function M.build(world, level)
   freeMeshes()
   bodies = {}
+  spinners = {}
 
   local X0, Y0 = 210, 40
   local W, H = 1500, 1000
@@ -442,6 +482,7 @@ function M.build(world, level)
   local zoneFlat  = newFlat(mat.zone)
   local edgeTopFlat = newFlat(mat.edge)
   local bumperFlat = newFlat(mat.edge)
+  local edgeSideFlat = newFlat(mat.edge)
   batchBox(turfBatch, cx, -FLOOR_T / 2, cy, W / 2, FLOOR_T / 2, H / 2, 1 / 96)
   staticBox(world, cx, -FLOOR_T / 2, cy, W / 2, FLOOR_T / 2, H / 2, 0.85, 0.2)
 
@@ -479,6 +520,48 @@ function M.build(world, level)
         flatPoly(zoneFlat, e.points, 2, e.x, e.y, 1 / 64)
       end
 
+    elseif e.dynamic and e.id ~= "ball" then
+      -- THE WINDMILL. Hole 13's woodbar is the one moving obstacle in the
+      -- whole course, and it was not implemented at all -- the hole played
+      -- as an empty rectangle. It spins about its centre as a KINEMATIC
+      -- body: driven by the game rather than by forces, so it sweeps the
+      -- ball aside without the ball ever pushing it back.
+      local m = dream:newMesh(mat.edge)
+      local mv = m:getOrCreateBuffer("vertices")
+      local mn = m:getOrCreateBuffer("normals")
+      local mt = m:getOrCreateBuffer("texCoords")
+      local mf = m:getOrCreateBuffer("faces")
+      local hw, hh, hy = e.hw / U, e.hh / U, WALL_H / 2 / U
+      local faces = {
+        { { 0, 1, 0}, {-hw, hy,-hh}, { hw, hy,-hh}, { hw, hy, hh}, {-hw, hy, hh} },
+        { { 0, 0, 1}, {-hw,-hy, hh}, { hw,-hy, hh}, { hw, hy, hh}, {-hw, hy, hh} },
+        { { 0, 0,-1}, { hw,-hy,-hh}, {-hw,-hy,-hh}, {-hw, hy,-hh}, { hw, hy,-hh} },
+        { { 1, 0, 0}, { hw,-hy, hh}, { hw,-hy,-hh}, { hw, hy,-hh}, { hw, hy, hh} },
+        { {-1, 0, 0}, {-hw,-hy,-hh}, {-hw,-hy, hh}, {-hw, hy, hh}, {-hw, hy,-hh} },
+      }
+      local base = 0
+      for _, f in ipairs(faces) do
+        local n = f[1]
+        for i = 2, 5 do
+          mv:append({ f[i][1], f[i][2], f[i][3] })
+          mn:append({ n[1], n[2], n[3] })
+          mt:append({ (i == 2 or i == 5) and 0 or 1, (i <= 3) and 0 or 1 })
+        end
+        mf:append({ base + 1, base + 2, base + 3 })
+        mf:append({ base + 1, base + 3, base + 4 })
+        base = base + 4
+      end
+      finish(m, tex.lit.edge.south)
+
+      local b = b3.body_new(world, e.x, WALL_H / 2, e.y, 1)   -- 1 = kinematic
+      local sh = b3.shape_box(b, e.hw, WALL_H / 2, e.hh)
+      b3.shape_set_material(sh, 0.4, 0.6)
+      bodies[#bodies + 1] = b
+      spinners[#spinners + 1] = {
+        mesh = m, body = b, x = e.x, y = e.y,
+        speed = e.spinSpeed or 1.15, angle = 0,
+      }
+
     elseif not e.sensor then
       -- TIMBER RAILS: real boxes with real height, both drawn and solid.
       if e.kind == "rect" then
@@ -501,19 +584,37 @@ function M.build(world, level)
         b3.shape_set_material(s, 0.5, e.restitution or 0.55)
         bodies[#bodies + 1] = b
       elseif e.kind == "poly" then
-        -- A polygon rail becomes a drawn cap plus a box hull for collision:
-        -- Box3D has no convex-hull-from-points shape, and the layouts'
-        -- polygons are all small wedges where a tight box is honest enough.
-        flatPoly(edgeTopFlat, e.points, WALL_H, e.x, e.y, 1 / 104)
-        local minx, maxx, minz, maxz = math.huge, -math.huge, math.huge, -math.huge
-        for i = 1, #e.points / 2 do
-          local px, pz = e.points[i * 2 - 1], e.points[i * 2]
-          minx = math.min(minx, px); maxx = math.max(maxx, px)
-          minz = math.min(minz, pz); maxz = math.max(maxz, pz)
+        -- A POLYGON RAIL IS A PRISM, drawn and collided as the same shape.
+        --
+        -- This used to draw a flat cap and collide with a BOX around the
+        -- whole outline. Box3D has no convex-hull shape, and I wrote that
+        -- the layouts' polygons were "all small wedges where a tight box is
+        -- honest enough" -- they are not: hole 2 alone has 267x161 and
+        -- 278x166 triangles, so the ball bounced off a large invisible
+        -- rectangle with only a thin cap visible.
+        --
+        -- Now the sides are drawn, and collision is a thin box PER EDGE
+        -- laid along the outline, so the solid shape is the drawn shape.
+        batchPolyPrism(edgeTopFlat, edgeSideFlat, e.points, WALL_H,
+                       e.x, e.y, 1 / 104)
+        local n = #e.points / 2
+        for i = 1, n do
+          local j = (i % n) + 1
+          local x1, z1 = e.points[i * 2 - 1], e.points[i * 2]
+          local x2, z2 = e.points[j * 2 - 1], e.points[j * 2]
+          local mx, mz = (x1 + x2) / 2, (z1 + z2) / 2
+          local dx, dz = x2 - x1, z2 - z1
+          local len = math.sqrt(dx * dx + dz * dz)
+          if len > 1 then
+            -- an axis-aligned box per edge is still an approximation, but
+            -- it hugs the OUTLINE instead of the bounding box: the error is
+            -- now a few pixels at a corner rather than a whole rectangle
+            staticBox(world, e.x + mx, WALL_H / 2, e.y + mz,
+                      math.max(3, math.abs(dx) / 2), WALL_H / 2,
+                      math.max(3, math.abs(dz) / 2),
+                      0.5, e.restitution or 0.55)
+          end
         end
-        staticBox(world, e.x + (minx + maxx) / 2, WALL_H / 2, e.y + (minz + maxz) / 2,
-                  math.max(2, (maxx - minx) / 2), WALL_H / 2,
-                  math.max(2, (maxz - minz) / 2), 0.5, e.restitution or 0.55)
       end
     end
   end
@@ -528,6 +629,9 @@ function M.build(world, level)
   finishFlat(zoneFlat, tex.lit.zone.top, meshes)
   finishFlat(edgeTopFlat, tex.lit.edge.top, meshes)
   finishFlat(bumperFlat, tex.lit.edge.top, meshes)
+  -- the prism sides take a SIDE-lit variant, not the top one, so a
+  -- polygon rail shades like every other rail
+  finishFlat(edgeSideFlat, tex.lit.edge.south, meshes)
 
   -- THE CUP, drawn last so it sits over the green rather than under it.
   if goal then
@@ -581,9 +685,28 @@ end
 
 function M.ballMesh() return ballMesh end
 
+-- Advance the moving obstacles. Kinematic bodies do not move themselves:
+-- the game sets their transform, and the solver sweeps anything they touch.
+function M.update(dt)
+  for _, s in ipairs(spinners) do
+    s.angle = s.angle + s.speed * dt
+    b3.body_set_transform(s.body, s.x, WALL_H / 2, s.y, 0, 1, 0, s.angle)
+  end
+end
+
 function M.draw()
   for _, m in ipairs(meshes) do
     dream:draw(m[1], m[2], m[3], m[4])
+  end
+  -- the spinners carry their own rotation, so they are drawn from a matrix
+  for _, s in ipairs(spinners) do
+    local c, sn = math.cos(s.angle), math.sin(s.angle)
+    dream:draw(s.mesh, dream.mat4({
+      c, 0, sn, s.x / U,
+      0, 1, 0,  WALL_H / 2 / U,
+      -sn, 0, c, s.y / U,
+      0, 0, 0, 1,
+    }))
   end
 end
 

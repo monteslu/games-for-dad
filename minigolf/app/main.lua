@@ -73,6 +73,7 @@ local msg, msgTimer = nil, 0
 local sunkTimer = 0
 local startX, startY = 0, 0
 local lastVX, lastVZ = nil, nil
+local dragFrom = nil    -- where the current drag STARTED, in cart pixels
 
 -- 3Dream wants a WORLD matrix for the camera, not a view matrix.
 --
@@ -326,17 +327,28 @@ function love.update(dt)
       if edges.a or edges.b then strike() end
     end
 
-    -- Touch/mouse: drag away from the ball. The drag vector IS the shot,
-    -- reversed -- pull back like a real putter and let go.
+    -- Touch/mouse: the drag is measured from WHERE THE FINGER WENT DOWN,
+    -- not from the ball.
+    --
+    -- Measuring from the ball made the pull effectively random: the moment
+    -- you touched anywhere, the distance from that point to the ball was
+    -- already counted as pull, so touching far from the ball fired a
+    -- full-power shot before you had dragged at all. A putt has to be a
+    -- gesture with a beginning -- press, drag back, release -- and the
+    -- length of the DRAG is the power.
     if held then
-      local dx, dy = held.x - bx, held.y - by
+      if not dragFrom then dragFrom = { x = held.x, y = held.y } end
+      local dx, dy = held.x - dragFrom.x, held.y - dragFrom.y
       local d = math.sqrt(dx * dx + dy * dy)
       if d > 8 then
         aimAngle = math.atan(-dy, -dx)
         aimPull = math.min(MAX_PULL, d)
+      else
+        aimPull = 0
       end
-    elseif aimPull > 0 and not padUsed then
-      strike()
+    else
+      if aimPull > 0 and not padUsed then strike() end
+      dragFrom = nil
     end
   end
 
@@ -345,6 +357,7 @@ function love.update(dt)
     b3.world_step(world, 1 / 60, 4)
   end
 
+  course.update(dt)
   fx.update(dt)
 
   -- Publish the ball's position for the test harness. Finding it by

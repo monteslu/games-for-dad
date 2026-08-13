@@ -199,6 +199,26 @@ ok('the aim line meets the ball (2D overlays are projected)',
    align ? `the aim line comes no closer than ${align.gap.toFixed(0)}px to the ball`
          : 'could not find the aim line or the ball');
 
+// ── 6. a TAP is not a shot ────────────────────────────────────────────
+//
+// The pull used to be measured from the BALL rather than from where the
+// finger went down, so the instant you touched anywhere the distance to
+// the ball counted as pull -- touching far from the ball fired a
+// full-power putt before you had dragged at all. The power has to come
+// from the length of the DRAG.
+await tool('loadMedia', { platform: 'wasmcart', path: CART });
+await tool('frame', { op: 'step', frames: 25 });
+const tapBefore = await fields();
+await tool('input', { op: 'pointer', id: 0, x: 1500, y: 900, left: true });
+await tool('frame', { op: 'step', frames: 4 });
+await tool('input', { op: 'pointer', id: 0, x: 1500, y: 900, active: false });
+await tool('frame', { op: 'step', frames: 40 });
+const tapAfter = await fields();
+const bx0 = Math.floor((tapBefore.score || 0) / 2048);
+const bx1 = Math.floor((tapAfter.score || 0) / 2048);
+ok('a tap far from the ball does NOT putt', Math.abs(bx1 - bx0) < 8,
+   `the ball moved ${Math.abs(bx1 - bx0)}px from a tap with no drag`);
+
 console.log();
 if (failures.length) {
   console.log(`FAIL (${failures.length})`);
