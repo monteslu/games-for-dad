@@ -96,11 +96,19 @@ and rattles in.
 **The hole layouts are [frozenjs/minigolf](https://github.com/frozenjs/minigolf)'s**
 (MIT, Iced Development LLC), converted from that game's own level data by
 `tools/convert-levels.mjs` -- 431 pieces of collision geometry across 22
-holes. The three sounds are its own too. The physics, rendering and
-controls here are new: the course is drawn as vector graphics from the
-collision shapes themselves, so what you see is exactly what you hit, and
-the ball texture is generated with 392 dimples on a sphere
-(`tools/make-ball.mjs`).
+holes. The three sounds are its own too. Everything else here is new.
+
+**It is full 3D with 3D physics.** Box3D simulates a real sphere rolling on
+a real surface, so the ball's spin comes out of the solver as an actual
+quaternion rather than being derived from how far it travelled. Every
+entity produces both a mesh and a collision shape from the same numbers, so
+what you see is exactly what the ball hits.
+
+The look follows Neverputt: textured turf with mower stripes, grey concrete
+walls, a soft contact shadow under the ball and beside every rail. All of
+it is generated at load in `app/art.lua` -- including the lighting, which
+is baked into one texture variant per face direction because this engine's
+3D path has no runtime lighting at all.
 
 <img src="docs/shots/minigolf.png" alt="Minigolf" width="480">
 
@@ -214,13 +222,27 @@ cd jewels
 ./tools/run-play-test.sh     # drives main.lua through the real input path
 ```
 
-Minigolf's assets are generated rather than committed as opaque binaries,
-so they can be rebuilt and reviewed:
+Minigolf carries two of its own, which drive the real cart through romdev:
+
+```
+cd minigolf
+node test/holes.mjs    # renders all 22 holes, asserts on PIXELS
+node test/play.mjs     # putts, settles, sinks, and checks the aim line
+```
+
+`holes.mjs` asserts on the picture rather than on draw calls, because a
+draw-call count of 27 was once reported by a completely black frame. It
+checks the course is there, the cup is a solid round disc rather than a
+ring or a smear, the flag is visible, the ball is textured, the rails cast
+contact shadows, and the ball is not sitting in the cup -- which is what a
+mirrored camera looks like. Every one of those assertions was verified
+against a deliberately broken build before being trusted.
+
+Its assets are generated rather than committed as opaque binaries:
 
 ```
 cd minigolf
 node tools/convert-levels.mjs ../../minigolf/src/levelData.js   # the 22 holes
-node tools/make-ball.mjs                                        # the ball texture
 python3 tools/make-icon.py                                      # the launcher icon
 ```
 
