@@ -24,6 +24,7 @@
 local theme  = require("lib.theme")
 local ui     = require("lib.ui")
 local sounds = require("lib.sounds")
+local art    = require("art")
 local dream  = require("3DreamEngine.init")
 local dbg    = love.physics3d.debug
 
@@ -97,6 +98,13 @@ local dragFrom = nil
 local msg, msgT = nil, 0
 local standingAtFrameStart = 10
 local t = 0
+
+-- Audio state for the shot in flight. The roll is a long sound that has to
+-- be cut when the ball arrives or drops in the channel, and the crash must
+-- fire exactly once per roll rather than every frame the ball is near the
+-- rack.
+local rollingSound, hitRack, inGutter = false, false, false
+local prevStanding = 10
 
 local function setMsg(s, secs) msg, msgT = s, secs or 2.2 end
 
@@ -177,7 +185,12 @@ end
 --
 -- Proportions follow a real pin: 15in tall, 2.25in across the base, 4.7in
 -- at the belly, waisted to ~1.8in at the neck, rounded head.
-local PIN_SEG = 14                  -- sides per hull; round enough to roll
+-- Sides per hull. 14 was chosen to be round enough to ROLL convincingly;
+-- now that the pins are textured and the camera comes in close at the rack,
+-- they also have to be round enough to LOOK round, and a 14-sided silhouette
+-- against a dark backdrop reads as a cut gem. Meshes are shared by size
+-- signature, so ten pins still cost six meshes at any segment count.
+local PIN_SEG = 22
 local function newPin(x, z)
   local b = b3.body_new(world, x, PIN_H / 2, z, 2)     -- 2 = dynamic
 
@@ -186,19 +199,35 @@ local function newPin(x, z)
   local H = PIN_H
   local rBase, rBelly, rNeck, rHead = PIN_R * 0.92, PIN_R * 1.30, PIN_R * 0.56, PIN_R * 0.80
 
+  -- Each section wears its OWN SLICE of the pin texture, given as the
+  -- fraction of the pin's height it occupies -- centre y, plus or minus
+  -- half its height, remapped from the pin's -0.5H..+0.5H onto 0..1. That
+  -- is what carries the two red neck stripes across six separate meshes as
+  -- one continuous livery; without it every section would repeat the whole
+  -- texture and the pin would wear six pairs of stripes.
+  local function vr(centre, height)
+    return { (centre - height / 2) + 0.5, (centre + height / 2) + 0.5 }
+  end
+
   -- base: a flat-bottomed cylinder, barely tapered. Wide enough to STAND
   -- on -- the first pass ran it at 0.62 and the pins came to a point like
   -- skittles, which both looks wrong and makes them tip too easily.
-  local s1 = dbg.cylinder(b, H * 0.10, rBase, -H * 0.45, PIN_SEG, 0.9)
+  local s1 = dbg.cylinder(b, H * 0.10, rBase, -H * 0.45, PIN_SEG, 0.9,
+                          "pin", vr(-0.45, 0.10))
   -- the flare from base up into the belly
-  local s2 = dbg.cone(b, H * 0.20, rBase, rBelly, -H * 0.30, PIN_SEG, 0.9)
+  local s2 = dbg.cone(b, H * 0.20, rBase, rBelly, -H * 0.30, PIN_SEG, 0.9,
+                      "pin", vr(-0.30, 0.20))
   -- belly: the widest part, nearly straight
-  local s3 = dbg.cone(b, H * 0.16, rBelly, rBelly * 0.96, -H * 0.12, PIN_SEG, 0.9)
+  local s3 = dbg.cone(b, H * 0.16, rBelly, rBelly * 0.96, -H * 0.12, PIN_SEG, 0.9,
+                      "pin", vr(-0.12, 0.16))
   -- neck: the waist, tapering hard
-  local s4 = dbg.cone(b, H * 0.28, rBelly * 0.96, rNeck, H * 0.10, PIN_SEG, 0.9)
+  local s4 = dbg.cone(b, H * 0.28, rBelly * 0.96, rNeck, H * 0.10, PIN_SEG, 0.9,
+                      "pin", vr(0.10, 0.28))
   -- head: flares back out, then a rounded cap rather than a point
-  local s5 = dbg.cone(b, H * 0.16, rNeck, rHead, H * 0.32, PIN_SEG, 0.9)
-  local s6 = dbg.cone(b, H * 0.10, rHead, rHead * 0.62, H * 0.45, PIN_SEG, 0.9)
+  local s5 = dbg.cone(b, H * 0.16, rNeck, rHead, H * 0.32, PIN_SEG, 0.9,
+                      "pin", vr(0.32, 0.16))
+  local s6 = dbg.cone(b, H * 0.10, rHead, rHead * 0.62, H * 0.45, PIN_SEG, 0.9,
+                      "pin", vr(0.45, 0.10))
 
   for _, s in ipairs({ s1, s2, s3, s4, s5, s6 }) do
     b3.shape_set_material(s, PIN_FRICTION, PIN_REST)
@@ -208,35 +237,181 @@ local function newPin(x, z)
   return { body = b, x = x, z = z, down = false }
 end
 
+-- ── surfaces ──────────────────────────────────────────────────────────
+--
+-- The default renderer draws every body, and now it can draw them WEARING
+-- something. The geometry is unchanged -- the same dbg.box that makes the
+-- collider makes the mesh -- so texturing cannot introduce the class of bug
+-- that comes from art and colliders being described separately.
+--
+-- uvScale is texture repeats per PIXEL, which is what keeps a texture the
+-- same physical size on a 4600px lane and on a 12px lip. The alternative,
+-- fitting 0..1 to each face, smears one and tiles the other to mush.
+local function defineSkins()
+  local tex = art.makeTextures()
+
+  -- THE LIGHT RIG. The renderer's defaults are tuned to make a COLLIDER
+  -- readable -- ambient 0.42, so nothing is ever lost in shadow. That is
+  -- exactly what makes a finished picture look flat: high ambient shrinks
+  -- the gap between a face in the light and a face out of it, and that gap
+  -- IS the modelling.
+  --
+  -- So: ambient down to 0.24, a strong warm key from high above and
+  -- slightly behind the bowler (an alley's lights are over the lane), and a
+  -- dim cool fill from the opposite side to keep the far gutter from going
+  -- to pure black. Warm key against cool fill is what gives the pins a lit
+  -- side and a shadow side instead of one average brightness.
+  dbg.setLightRig({
+    ambient       = 0.24,
+    key           = { -0.30, 0.90, 0.32 },
+    keyColor      = { 1.00, 0.94, 0.82 },
+    keyIntensity  = 1.00,
+    fill          = { 0.70, 0.30, -0.45 },
+    fillColor     = { 0.48, 0.58, 0.86 },
+    fillIntensity = 0.42,
+  })
+
+  -- THE LANE. The one surface whose UV is not a free choice.
+  --
+  -- Its texture is 39 BOARDS across, and on a top face u runs across the
+  -- lane (X) while v runs down it (Z). So u must repeat EXACTLY ONCE over
+  -- the full width -- 1/LANE_W -- or the tiling saws a board in half at the
+  -- gutter, which is instantly visible as a seam of the wrong width. v is
+  -- free, and repeats every ~1200px so the grain does not stretch over a
+  -- 4600px runway.
+  dbg.defineSkin("lane", { texture = tex.lane, uvScale = { 1 / LANE_W, 1 / 1200 } })
+  dbg.defineSkin("deck", { texture = tex.deck, uvScale = 1 / 420 })
+  dbg.defineSkin("gutter", { texture = tex.gutter, uvScale = 1 / 260 })
+  dbg.defineSkin("wall", { texture = tex.wall, uvScale = 1 / 300 })
+
+  -- The room. Tiled coarsely -- these are big surfaces seen at a distance,
+  -- and a fine repeat on a 3000px wall turns to noise.
+  dbg.defineSkin("floor",   { texture = tex.floor,   uvScale = 1 / 480 })
+  dbg.defineSkin("ceiling", { texture = tex.ceiling, uvScale = 1 / 900 })
+  dbg.defineSkin("masking", { texture = tex.masking, uvScale = 1 / 1100 })
+
+  -- The ball is a sphere, so uvScale does not apply -- a sphere's UVs
+  -- already wrap it exactly once, which is what the marbling and the
+  -- finger holes are authored against. It gets extra segments instead,
+  -- because it is the object the eye tracks for the whole roll.
+  dbg.defineSkin("ball", { texture = tex.ball, segments = 32, roughness = 0.25 })
+
+  -- THE PINS. No uvScale: the texture is authored as one pin from base to
+  -- head, and each of the six hulls takes its own slice of it (see newPin),
+  -- so the mapping is already exact and scaling it would only break the
+  -- alignment of the neck stripes.
+  dbg.defineSkin("pin", { texture = tex.pin, roughness = 0.35 })
+end
+
+-- THE ROOM.
+--
+-- Without this the alley is a lit plank floating in a void, and the void is
+-- most of the screen. A bowling alley is a ROOM -- a dim one, with a bright
+-- lane in it -- and the room is what tells the eye how big the lane is and
+-- where the light is coming from.
+--
+-- These are STATIC BODIES placed where the ball can never reach: outside
+-- the gutter walls, above the ceiling line, behind the pit. They are real
+-- collision geometry, which keeps the renderer's one invariant intact --
+-- the mesh is built from the shape, so decor cannot drift away from what it
+-- claims to be -- while being unreachable, so they change no outcome.
+--
+-- AND THE ROOM MUST NOT ENCLOSE THE CAMERA.
+--
+-- This is the whole difficulty, and the first attempt got it wrong in the
+-- most complete way available: a ceiling at y=1160 with the camera at
+-- y=2795 put the eye ABOVE the roof looking down at its underside, and the
+-- frame was a solid dark slab with the alley nowhere in it.
+--
+-- The camera is derived, not fixed: it stands off at `dist` and rides
+-- `dist * tan(45deg)` above the deck, and `dist` grows with the span it has
+-- to hold. At the setup framing -- the widest span, ball at the foul line
+-- -- it reaches x = -2730, y = 2795. So the room is sized from THAT, with
+-- margin, rather than from the lane.
+local ROOM_X    = 3600            -- side walls, well outside the camera's -2730
+local ROOM_Y    = 3400            -- ceiling, above the camera's 2795
+local ROOM_FLOOR = -150
+local ROOM_Z_PAD = 1200           -- how far the room runs past each end
+
+local function buildRoom()
+  local midZ = LANE_LEN / 2
+  local halfZ = LANE_LEN / 2 + ROOM_Z_PAD
+  local OUT  = LANE_W / 2 + GUTTER_W          -- outside the gutter wall
+
+  -- THE APPROACH, behind the foul line. A bowler stands somewhere, and
+  -- ending the boards at z=0 makes the lane look like it was cut off.
+  --
+  -- WIDER THAN THE LANE and running to the near wall. At lane width it read
+  -- as a stub jutting into the void off the left edge of frame -- a piece
+  -- of geometry rather than a place. An approach is the widest part of the
+  -- floor in a real alley, not the narrowest.
+  local apHalf = (halfZ - 40) * 0.5
+  local ap = b3.body_new(world, 0, -20, -apHalf, 0)
+  dbg.box(ap, OUT + 900, 20, apHalf, nil, "deck")
+
+  -- THE FLOOR of the room, wide and low, running the whole length. It
+  -- catches the dim fill light and gives the alley something to stand on.
+  local fl = b3.body_new(world, 0, ROOM_FLOOR, midZ, 0)
+  dbg.box(fl, ROOM_X, 16, halfZ, nil, "floor")
+
+  -- SIDE WALLS. Only the FAR one is ever seen -- the camera stands off the
+  -- -x rail looking across, so the -x wall would sit behind the eye and the
+  -- +x wall is the backdrop the lane is seen against. Both are built
+  -- anyway: the camera swings with the fit, and a room with one wall is a
+  -- room that breaks the moment the framing changes.
+  for _, side in ipairs({ -1, 1 }) do
+    local w = b3.body_new(world, side * ROOM_X, ROOM_Y / 2, midZ, 0)
+    dbg.box(w, 20, ROOM_Y / 2, halfZ, nil, "wall")
+  end
+
+  -- THE CEILING, dark, so the top of the frame is not empty void. Above the
+  -- camera, or it becomes the picture.
+  local ce = b3.body_new(world, 0, ROOM_Y, midZ, 0)
+  dbg.box(ce, ROOM_X, 20, halfZ, nil, "ceiling")
+
+  -- THE BACK WALL behind the pit, the surface the pins are seen against.
+  -- It is the backdrop of every shot, so it gets the masking that a real
+  -- alley has above the deck.
+  local bw = b3.body_new(world, 0, ROOM_Y / 2, LANE_LEN + 620, 0)
+  dbg.box(bw, ROOM_X, ROOM_Y / 2, 20, nil, "masking")
+
+  -- The wall behind the BOWLER, closing the room at the near end.
+  local nw = b3.body_new(world, 0, ROOM_Y / 2, -halfZ, 0)
+  dbg.box(nw, ROOM_X, ROOM_Y / 2, 20, nil, "wall")
+end
+
 local function buildAlley()
   if world then b3.world_destroy(world) end
   dbg.reset()
   world = b3.world_new(0, GRAVITY, 0)
 
-  -- THE LANE. A thin box, which the default renderer draws as a ruled
-  -- plane -- a floor described as a flattened box is exactly the case a
-  -- box outline renders worst.
+  -- THE LANE. A thin box. Untextured it drew as a ruled plane -- a
+  -- flattened box is the case a box outline renders worst -- but SKINNED it
+  -- stays a box, because the boards now say where the surface is and the
+  -- solid edge is what the ball visibly rolls between.
   local laneBody = b3.body_new(world, 0, -20, LANE_LEN / 2, 0)
-  dbg.box(laneBody, LANE_W / 2, 20, LANE_LEN / 2)
+  dbg.box(laneBody, LANE_W / 2, 20, LANE_LEN / 2, nil, "lane")
 
   -- THE GUTTERS, one either side, dropped below the lane so a ball that
   -- leaves the boards falls in and cannot come back.
   for _, side in ipairs({ -1, 1 }) do
     local gx = side * (LANE_W / 2 + GUTTER_W / 2)
     local g = b3.body_new(world, gx, -70, LANE_LEN / 2, 0)
-    dbg.box(g, GUTTER_W / 2, 20, LANE_LEN / 2)
+    dbg.box(g, GUTTER_W / 2, 20, LANE_LEN / 2, nil, "gutter")
     -- the outer wall, so the ball cannot leave the building
     local w = b3.body_new(world, side * (LANE_W / 2 + GUTTER_W), WALL_H / 2,
                           LANE_LEN / 2, 0)
-    dbg.box(w, 12, WALL_H / 2, LANE_LEN / 2)
+    dbg.box(w, 12, WALL_H / 2, LANE_LEN / 2, nil, "wall")
     -- the lip between lane and gutter: what makes the gutter a real edge
     local lip = b3.body_new(world, side * (LANE_W / 2 + 6), -34, LANE_LEN / 2, 0)
-    dbg.box(lip, 6, 34, LANE_LEN / 2)
+    dbg.box(lip, 6, 34, LANE_LEN / 2, nil, "deck")
   end
 
   -- THE PIT, at the far end, so pins and ball stop somewhere.
   local back = b3.body_new(world, 0, WALL_H, LANE_LEN + 60, 0)
-  dbg.box(back, LANE_W / 2 + GUTTER_W, WALL_H * 2, 30)
+  dbg.box(back, LANE_W / 2 + GUTTER_W, WALL_H * 2, 30, nil, "wall")
+
+  buildRoom()
 
   pins = {}
   for _, s in ipairs(pinSpots()) do
@@ -249,13 +424,22 @@ end
 local function placeBall()
   if ballBody then b3.body_destroy(ballBody) end
   ballBody = b3.body_new(world, 0, BALL_R, 120, 2)
-  local s = dbg.sphere(ballBody, BALL_R, 2.2)
+  local s = dbg.sphere(ballBody, BALL_R, 2.2, "ball")
   b3.shape_set_material(s, BALL_FRICTION, BALL_REST, BALL_ROLL)
   b3.body_set_linear_damping(ballBody, 0.08)
   b3.body_set_angular_damping(ballBody, 0.12)
   b3.body_set_bullet(ballBody, true)
   aimAngle, aimPull, aimSpin = 0, 0, 0
   dragFrom = nil
+  -- A new ball is a new shot: the crash may fire again, and the pin count
+  -- baseline restarts from whatever is standing now (which is NOT ten on
+  -- the second ball of a frame).
+  hitRack, inGutter = false, false
+  local standing = 0
+  for _, p in ipairs(pins) do
+    if not p.down then standing = standing + 1 end
+  end
+  prevStanding = standing
 end
 
 -- ── scoring ───────────────────────────────────────────────────────────
@@ -336,7 +520,11 @@ local function throw()
   b3.body_set_angular_velocity(ballBody, 0, aimSpin * MAX_SPIN, 0)
   state = "rolling"
   settleT = 0
-  sounds.play("clack", 0.5, 0.85)
+  -- The roll runs under the whole shot. Pitched slightly by how hard it was
+  -- thrown, so a gentle ball sounds like a gentle ball.
+  sounds.play("roll", 0.55, 0.88 + (sp / MAX_SPEED) * 0.22)
+  rollingSound = true
+  hitRack, inGutter = false, false
 end
 
 -- ── love callbacks ────────────────────────────────────────────────────
@@ -344,13 +532,20 @@ end
 function love.load()
   dream.canvases:setMode("direct")
   dream:init()
+  -- THE BACKDROP. Not a sky -- this is indoors. A dark warm haze that is
+  -- dimmest at the top (the unlit ceiling of a big room) and lifts slightly
+  -- toward the floor, where the alley's own lights spill. Warm rather than
+  -- blue, because every other surface in the room is warm and a blue void
+  -- behind them reads as outdoors at dusk.
   dream:setSky(function()
     local g = love.graphics
     g.setDepthMode()
-    for i = 0, 31 do
-      local k = i / 31
-      g.setColor(0.05 + k * 0.06, 0.06 + k * 0.07, 0.10 + k * 0.10)
-      g.rectangle("fill", 0, i * (1080 / 32), 1920, 1080 / 32 + 1)
+    for i = 0, 47 do
+      local k = i / 47
+      -- eased so most of the frame stays dark and the lift is near the base
+      local e = k * k
+      g.setColor(0.045 + e * 0.10, 0.038 + e * 0.075, 0.062 + e * 0.085)
+      g.rectangle("fill", 0, i * (1080 / 48), 1920, 1080 / 48 + 1)
     end
     g.setColor(1, 1, 1, 1)
   end)
@@ -358,6 +553,12 @@ function love.load()
   b3.set_meter(PPM)
   dbg.init(dream, U)
   dbg.setEnabled(true)          -- the default renderer IS the graphics here
+
+  -- AFTER dbg.init: a skin builds a material, which needs the 3D lib the
+  -- renderer is holding. Before buildAlley, because a shape looks its skin
+  -- up by name at creation time and an unknown name silently falls back to
+  -- the debug palette.
+  defineSkins()
 
   sounds.loadAll()
   buildAlley()
@@ -418,13 +619,18 @@ local function endOfBall()
   local knockedThisBall = down - (10 - standingAtFrameStart)
   rolls[#rolls + 1] = knockedThisBall
 
+  -- whatever is left of the shot's audio stops here
+  sounds.stop("roll")
+  rollingSound = false
+
   local tenth = frameNo == 10
   if knockedThisBall == 10 and ballNo == 1 then
     setMsg("STRIKE", 2.4)
-    sounds.play("hole", 0.9)
+    sounds.play("strike", 0.85)
   elseif down == 10 then
-    setMsg(ballNo == 1 and "STRIKE" or "SPARE", 2.2)
-    sounds.play("hole", 0.8)
+    local strike = ballNo == 1
+    setMsg(strike and "STRIKE" or "SPARE", 2.2)
+    sounds.play(strike and "strike" or "spare", 0.8)
   end
 
   if tenth then
@@ -494,6 +700,49 @@ function love.update(dt)
     local vx, vy, vz = b3.body_velocity(ballBody)
     local speed = math.sqrt(vx * vx + vy * vy + vz * vz)
     local bx, by, bz = b3.body_position(ballBody)
+
+    -- ── the sound of the shot ──────────────────────────────────────
+    --
+    -- THE GUTTER, first: the ball has left the boards. Read from the
+    -- BALL'S OWN POSITION rather than from a collision callback, which is
+    -- the same principle the rest of this game follows -- the simulation is
+    -- the source of truth and the presentation reads it.
+    if not inGutter and math.abs(bx) > LANE_W / 2 + 12 and by < 0 then
+      inGutter = true
+      sounds.stop("roll"); rollingSound = false
+      sounds.play("gutter", 0.6)
+    end
+
+    -- THE CRASH, once, when the ball reaches the rack with pins still up.
+    if not hitRack and not inGutter and bz > PIN_ROW_Z - PIN_SPACING then
+      hitRack = true
+      sounds.stop("roll"); rollingSound = false
+      -- louder for a faster ball; a slow trickle into the rack should not
+      -- sound like a strike
+      local power = math.min(1, speed / (MAX_SPEED * 0.7))
+      sounds.play("pinhit", 0.45 + power * 0.45, 0.94 + power * 0.12)
+    end
+
+    -- INDIVIDUAL PINS toppling after the crash. Counting the standing pins
+    -- and clacking on each change gives the scatter its own sound without
+    -- needing per-contact callbacks.
+    local standing = 0
+    for _, p in ipairs(pins) do
+      local _, py, _ = b3.body_position(p.body)
+      local qx, qy, qz, qw = b3.body_rotation(p.body)
+      local uy = 1 - 2 * (qx * qx + qz * qz)
+      if uy >= 0.72 and py > PIN_H * 0.3 then standing = standing + 1 end
+    end
+    if standing < prevStanding and hitRack then
+      -- pitch varies per pin so a rack going down is not a metronome
+      sounds.play("pinclack", 0.5, 0.86 + (standing % 5) * 0.07)
+    end
+    prevStanding = standing
+
+    -- The roll fades out when the ball has stopped being a rolling ball.
+    if rollingSound and speed < 120 then
+      sounds.stop("roll"); rollingSound = false
+    end
 
     -- everything has stopped, or the ball is past the pins and slow
     local moving = speed > 40

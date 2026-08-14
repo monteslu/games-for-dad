@@ -133,6 +133,7 @@
 3DreamEngine/shaders/sky/sky_cube.glsl
 3DreamEngine/shaders/sky/sky_hdri.glsl
 3DreamEngine/thread.lua
+art.lua
 assets.index
 conf.lua
 fonts/AtkinsonBold.ttf
@@ -142,5 +143,11 @@ lib/theme.lua
 lib/ui.lua
 main.lua
 sounds/clack.ogg
+sounds/gutter.ogg
 sounds/hole.ogg
 sounds/laugh.ogg
+sounds/pinclack.ogg
+sounds/pinhit.ogg
+sounds/roll.ogg
+sounds/spare.ogg
+sounds/strike.ogg
