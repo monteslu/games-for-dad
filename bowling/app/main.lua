@@ -64,6 +64,19 @@ local LANE_W   = 344
 -- the rack sliding down a longer lane -- the proportions of the alley stay
 -- what they were.
 local LANE_LEN = 4140               -- foul line to the pit
+
+-- WHERE THE BOARDS START.
+--
+-- The lane used to begin at z=0 and the ball at z=120, so the near end of
+-- the alley sat hard against the left edge of the frame with the ball
+-- almost on top of it. Chopping the boards back moves the whole left edge
+-- of the picture inward -- the camera frames the ball and the rack, and
+-- the ball comes with it -- which is what actually opens up room for a
+-- hand on a tablet.
+--
+-- The ball starts ON the foul line plus its own radius, so these two can
+-- never drift apart: boards before the ball are boards nobody uses.
+local FOUL_Z   = 620
 local LANE_Y   = 0                  -- the lane surface sits at y=0
 local GUTTER_W = 90
 local WALL_H   = 60
@@ -281,7 +294,7 @@ local SPIN_UI_H = 96
 -- So the clamp is the gutter's own centre: at full sweep the ball leaves
 -- the boards, exactly as a real bad line does. Everything between is a
 -- real choice, and the pocket is a target you can miss on either side.
-local AIM_TRAVEL  = PIN_ROW_Z - 120                 -- foul line to headpin
+local AIM_TRAVEL  = PIN_ROW_Z - FOUL_Z              -- foul line to headpin
 local MAX_AIM     = math.atan((LANE_W / 2 + GUTTER_W * 0.5) / AIM_TRAVEL)
 -- How much finger travel spends the whole aim range. A deliberate, gentle
 -- sweep -- this is a game for someone who should not have to be precise,
@@ -625,8 +638,17 @@ local function buildRoom()
   -- as a stub jutting into the void off the left edge of frame -- a piece
   -- of geometry rather than a place. An approach is the widest part of the
   -- floor in a real alley, not the narrowest.
-  local apHalf = (halfZ - 40) * 0.5
-  local ap = b3.body_new(world, 0, -20, -apHalf, 0)
+  -- FIFTEEN FEET, which is what a real approach is -- the run-up a bowler
+  -- walks before the foul line, no more.
+  --
+  -- It used to be (halfZ - 40) * 0.5, which worked out to 3230px of boards
+  -- behind the foul line: FIFTY-THREE FEET at this scale. That slab was
+  -- what filled the left of the frame and left the ball jammed against the
+  -- edge with nowhere for a thumb to go. Cutting it is what actually
+  -- creates the room -- widening the camera's view only pulled MORE of it
+  -- into shot.
+  local apHalf = (15 * (PIN_ROW_Z - FOUL_Z) / 60) * 0.5
+  local ap = b3.body_new(world, 0, -20, FOUL_Z - apHalf, 0)
   dbg.box(ap, OUT + 900, 20, apHalf, nil, "deck")
 
   -- THE FLOOR of the room, wide and low, running the whole length. It
@@ -671,22 +693,24 @@ local function buildAlley()
   -- flattened box is the case a box outline renders worst -- but SKINNED it
   -- stays a box, because the boards now say where the surface is and the
   -- solid edge is what the ball visibly rolls between.
-  local laneBody = b3.body_new(world, 0, -20, LANE_LEN / 2, 0)
-  dbg.box(laneBody, LANE_W / 2, 20, LANE_LEN / 2, nil, "lane")
+  local laneMid  = (FOUL_Z + LANE_LEN) / 2
+  local laneHalf = (LANE_LEN - FOUL_Z) / 2
+  local laneBody = b3.body_new(world, 0, -20, laneMid, 0)
+  dbg.box(laneBody, LANE_W / 2, 20, laneHalf, nil, "lane")
 
   -- THE GUTTERS, one either side, dropped below the lane so a ball that
   -- leaves the boards falls in and cannot come back.
   for _, side in ipairs({ -1, 1 }) do
     local gx = side * (LANE_W / 2 + GUTTER_W / 2)
-    local g = b3.body_new(world, gx, -70, LANE_LEN / 2, 0)
-    dbg.box(g, GUTTER_W / 2, 20, LANE_LEN / 2, nil, "gutter")
+    local g = b3.body_new(world, gx, -70, laneMid, 0)
+    dbg.box(g, GUTTER_W / 2, 20, laneHalf, nil, "gutter")
     -- the outer wall, so the ball cannot leave the building
     local w = b3.body_new(world, side * (LANE_W / 2 + GUTTER_W), WALL_H / 2,
-                          LANE_LEN / 2, 0)
-    dbg.box(w, 12, WALL_H / 2, LANE_LEN / 2, nil, "wall")
+                          laneMid, 0)
+    dbg.box(w, 12, WALL_H / 2, laneHalf, nil, "wall")
     -- the lip between lane and gutter: what makes the gutter a real edge
-    local lip = b3.body_new(world, side * (LANE_W / 2 + 6), -34, LANE_LEN / 2, 0)
-    dbg.box(lip, 6, 34, LANE_LEN / 2, nil, "deck")
+    local lip = b3.body_new(world, side * (LANE_W / 2 + 6), -34, laneMid, 0)
+    dbg.box(lip, 6, 34, laneHalf, nil, "deck")
   end
 
   -- ── THE PIT ─────────────────────────────────────────────────────────
@@ -736,7 +760,7 @@ end
 
 local function placeBall()
   if ballBody then b3.body_destroy(ballBody) end
-  ballBody = b3.body_new(world, 0, BALL_R, 120, 2)
+  ballBody = b3.body_new(world, 0, BALL_R, FOUL_Z + BALL_R, 2)
   local s = dbg.sphere(ballBody, BALL_R, BALL_DENSITY, "ball")
   b3.shape_set_material(s, BALL_FRICTION, BALL_REST, BALL_ROLL)
   b3.body_set_linear_damping(ballBody, 0.08)
@@ -1113,7 +1137,7 @@ function love.update(dt)
     -- ball tracks straight through the oil and turns over the back end.
     if throwSpin ~= 0 and ballBody then
       local hx, hy, hz = b3.body_position(ballBody)
-      local f = (hz - 120) / (PIN_ROW_Z - 120)
+      local f = (hz - FOUL_Z) / (PIN_ROW_Z - FOUL_Z)
       if f > HOOK_START and f < 1.15 and hy > -40 then
         -- 0 at the start of the bite, 1 by the time it reaches the pins
         local bite = math.min(1, (f - HOOK_START) / (1 - HOOK_START))
@@ -1747,7 +1771,7 @@ function love.draw()
   -- ball's travel reads as motion across the screen rather than as a dot
   -- growing smaller. It tracks the ball down the lane but hangs back near
   -- the rack once the ball is close, so the pin action stays framed.
-  local bx, by, bz = 0, BALL_R, 120
+  local bx, by, bz = 0, BALL_R, FOUL_Z + BALL_R
   if ballBody then bx, by, bz = b3.body_position(ballBody) end
   -- Look PERPENDICULAR to the lane. Aiming the camera down-lane at all
   -- turns the alley into a diagonal wedge running off the corner of the
@@ -1762,18 +1786,7 @@ function love.draw()
   -- three more rows past PIN_ROW_Z, and fitting only to the headpin pushes
   -- the back six pins off the right edge.
   local backZ = PIN_ROW_Z + 3 * PIN_SPACING * 0.87
-  -- ROOM BEHIND THE BALL, and it is asymmetric on purpose.
-  --
-  -- The ball starts at the far left of the frame and a thumb coming in from
-  -- the left edge of a tablet needs somewhere to land that is not on top of
-  -- it. Widening CAM_FIT_SLACK would not do it -- that pushes both edges out
-  -- equally and just shrinks the alley -- so the margin goes HERE, on the
-  -- near side of the fit only.
-  --
-  -- Measured: at 200 the ball sat 197px from the left edge; at 700 it sits
-  -- far enough in that a hand has real room. Shortening the lane alone did
-  -- NOT achieve this, because the fit simply zoomed in to compensate.
-  local nearZ = math.min(bz, PIN_ROW_Z) - 700
+  local nearZ = math.min(bz, PIN_ROW_Z) - 200     -- margin behind the ball
   local midZ  = (nearZ + backZ) * 0.5
   -- CAM_FIT_SLACK is the framing margin. An exact fit puts the ball and the
   -- back of the rack ON the frame edges; tools/framing.mjs measures the gap
