@@ -60,6 +60,13 @@ local LANE_Y   = 0                  -- the lane surface sits at y=0
 local GUTTER_W = 90
 local WALL_H   = 60
 
+-- THE PIT, behind the pin deck. At 68px per foot (the lane is 60ft over
+-- 4080px) a real ten-foot pit is 680px. The first version had a backboard
+-- 179px past the back row -- 2.6 feet -- so pins bounced straight off it
+-- and back onto the deck instead of flying away and staying gone.
+local PIT_LEN   = 680
+local PIT_DEPTH = 150               -- how far below the lane the well sits
+
 local BALL_R   = 52
 local PIN_R    = 22
 local PIN_H    = 130
@@ -651,9 +658,40 @@ local function buildAlley()
     dbg.box(lip, 6, 34, LANE_LEN / 2, nil, "deck")
   end
 
-  -- THE PIT, at the far end, so pins and ball stop somewhere.
-  local back = b3.body_new(world, 0, WALL_H, LANE_LEN + 60, 0)
-  dbg.box(back, LANE_W / 2 + GUTTER_W, WALL_H * 2, 30, nil, "wall")
+  -- ── THE PIT ─────────────────────────────────────────────────────────
+  --
+  -- A REAL PIT IS A HOLE, not a wall a foot behind the pins.
+  --
+  -- It used to be a backboard 179px past the back row -- 2.6 feet at this
+  -- scale, where a real pit is about ten. Pins hit it and bounced straight
+  -- back onto the deck, which looks wrong and is wrong: a struck pin is
+  -- supposed to fly off the back and DISAPPEAR.
+  --
+  -- So the boards now stop at the end of the pin deck and the floor falls
+  -- away into a well. Pins that fly off the back drop into it and stay
+  -- there; the ball follows them. The backboard is still present, but it
+  -- is far enough away and low enough that nothing reaches it at speed.
+  local deckEndZ = PIN_ROW_Z + 3 * PIN_SPACING * 0.87 + PIN_R * 2
+
+  -- The pit floor, well below the lane, so anything that leaves the deck
+  -- falls out of play instead of rolling back into it.
+  local pitFloor = b3.body_new(world, 0, -PIT_DEPTH, deckEndZ + PIT_LEN / 2, 0)
+  dbg.box(pitFloor, LANE_W / 2 + GUTTER_W, 20, PIT_LEN / 2, nil, "deck")
+
+  -- The kickback walls either side of the pit, which is what a real one
+  -- has -- pins rattle off them rather than escaping sideways.
+  for _, side in ipairs({ -1, 1 }) do
+    local k = b3.body_new(world, side * (LANE_W / 2 + GUTTER_W),
+                          -PIT_DEPTH / 2, deckEndZ + PIT_LEN / 2, 0)
+    dbg.box(k, 12, PIT_DEPTH / 2 + WALL_H, PIT_LEN / 2, nil, "wall")
+  end
+
+  -- The backboard, at the far end of the pit and padded (low restitution),
+  -- so anything that does reach it drops rather than rebounds.
+  local back = b3.body_new(world, 0, -PIT_DEPTH / 2, deckEndZ + PIT_LEN, 0)
+  local bs = dbg.box(back, LANE_W / 2 + GUTTER_W, PIT_DEPTH / 2 + WALL_H, 24,
+                     nil, "masking")
+  b3.shape_set_material(bs, 0.9, 0.02)
 
   buildRoom()
 
