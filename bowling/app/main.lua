@@ -177,7 +177,18 @@ local CAM_HALF_H     = math.atan(math.tan(math.rad(CAM_FOV) * 0.5) * (1920 / 108
 local CAM_FIT_SLACK  = 1.10        -- breathing room, see the fit in love.draw
 
 -- Throwing. Pull back from the ball like every other game in the family.
-local MAX_PULL  = 300
+-- HOW FAR HE HAS TO DRAG FOR FULL POWER.
+--
+-- 300 was too far, and the reason is a layout one rather than a feel one.
+-- The pull is `dy` measured DOWNWARD from wherever the finger lands, the
+-- scoreboard owns the top 200px, and the spin meter's tap zone owned
+-- everything below y=846 -- so a drag needed 300px of clear travel inside
+-- a 646px band. Start any lower than y=546 and FULL POWER WAS
+-- UNREACHABLE, with nothing on screen to say so.
+--
+-- 180 opens that start band from 346px to 526px, and a shorter stroke is
+-- the right direction anyway for a hand that should never have to reach.
+local MAX_PULL  = 180
 local MAX_SPEED = 1500
 -- ── THE HOOK ──────────────────────────────────────────────────────────
 --
@@ -1062,8 +1073,11 @@ function love.update(dt)
     -- to choose. A gamepad press does the same thing, so the timing is
     -- reachable without a touchscreen.
     if not spinSet then
-      local tapped = (click and click.y > SPIN_UI_Y - 60
-                            and click.y < SPIN_UI_Y + SPIN_UI_H + 60)
+      -- The meter claims ITS OWN BAND and no more. It used to take 60px
+      -- of margin above and below, which ate into the space a throw drag
+      -- has to start in -- and the throw is the more important gesture.
+      local tapped = (click and click.y > SPIN_UI_Y - 16
+                            and click.y < SPIN_UI_Y + SPIN_UI_H + 40)
       if tapped or edges.x then
         spinSet = true
         aimSpinVal = s
@@ -1084,8 +1098,10 @@ function love.update(dt)
       local rate = MAX_AIM / 1.0
       if love.pad.isDown("left")  then aimAngle = math.max(-MAX_AIM, aimAngle - dt * rate) end
       if love.pad.isDown("right") then aimAngle = math.min( MAX_AIM, aimAngle + dt * rate) end
-      if love.pad.isDown("down")  then aimPull = math.min(MAX_PULL, aimPull + dt * 300) end
-      if love.pad.isDown("up")    then aimPull = math.max(0, aimPull - dt * 300) end
+      -- A full second from empty to full, derived from MAX_PULL rather
+      -- than a literal 300 that happened to match it once.
+      if love.pad.isDown("down")  then aimPull = math.min(MAX_PULL, aimPull + dt * MAX_PULL) end
+      if love.pad.isDown("up")    then aimPull = math.max(0, aimPull - dt * MAX_PULL) end
       if edges.a or edges.b then throw() end
       -- (Y used to toggle the physics view. The default renderer IS the
       -- graphics in this game, so that toggle only ever blanked the

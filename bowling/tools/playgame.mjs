@@ -27,7 +27,20 @@
 // is wrong: the rack RESETS between frames, so every second sample
 // straddled a reset and reported 0. It read a legitimate 91 as 54.
 
+import { readFileSync } from 'node:fs';
+
 const CART = new URL('../bowling.wasc', import.meta.url).pathname;
+
+// Read MAX_PULL out of the game rather than hardcoding it. It moved from
+// 300 to 180 and every harness that kept its own copy would have gone on
+// dragging 300px, quietly clamping every throw to full power and making
+// its own `power` argument mean nothing.
+const MAX_PULL = (() => {
+  const src = readFileSync(new URL('../app/main.lua', import.meta.url).pathname, 'utf8');
+  const m = src.match(/^local\s+MAX_PULL\s*=\s*([0-9.]+)/m);
+  if (!m) throw new Error('could not find MAX_PULL in main.lua');
+  return parseFloat(m[1]);
+})();
 const SESSION = 'bowling-playgame';
 const URL_MCP = 'http://127.0.0.1:7331/mcp';
 
@@ -94,7 +107,9 @@ async function readState() {
 // x offset becomes aim and hook, exactly as a finger would.
 async function throwBall(aimDx, power) {
   const x0 = 960, y0 = 560;
-  const y1 = y0 + Math.round(300 * power);        // MAX_PULL is 300
+  // MAX_PULL, read from the cart rather than copied -- a stale literal
+  // here silently rescales every throw the harness makes.
+  const y1 = y0 + Math.round(MAX_PULL * power);
   await call('input', { op: 'pointer', id: 1, x: x0, y: y0, left: true, active: true });
   await step(4);
   await call('input', { op: 'pointer', id: 1, x: x0 + aimDx, y: y1, left: true, active: true });
