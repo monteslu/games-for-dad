@@ -33,7 +33,21 @@ local dbg    = love.physics3d.debug
 local PPM      = 90                 -- pixels per metre
 local GRAVITY  = -9.81 * PPM
 
-local LANE_W   = 300                -- 42in at this scale, rounded for the eye
+-- THE LANE'S WIDTH IS SET BY THE RACK, not chosen.
+--
+-- A real lane is 42in wide with pins on 12in centres -- exactly 3.5 times
+-- the spacing -- and that ratio is not decorative: it is what puts the
+-- corner pins just inside the boards, clearing the gutter by about 0.6in.
+--
+-- At 300 this was WRONG IN A WAY YOU COULD SEE. The outermost pins sit at
+-- 1.5 spacings (144px) and are 22px in radius, so their outer edge lands at
+-- 166px against a half-width of 150 -- the corner pins overhung the lane by
+-- 16px and stood partly over the gutter, which is not a tight rack, it is
+-- an impossible one.
+--
+-- 344 is 3.58 spacings: true to life, plus a couple of px of margin because
+-- at this scale a 2px clearance disappears into a rounding error.
+local LANE_W   = 344
 -- LONG, close to life. A real lane is 60ft from foul line to headpin and
 -- 42in wide -- about 17:1. This ran at 4.6:1 for a while because a LEVEL
 -- side camera flattens a long rack into a single row, and the length had to
