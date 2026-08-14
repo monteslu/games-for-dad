@@ -649,16 +649,17 @@ local function buildRoom()
   -- as a stub jutting into the void off the left edge of frame -- a piece
   -- of geometry rather than a place. An approach is the widest part of the
   -- floor in a real alley, not the narrowest.
-  -- FIFTEEN FEET, which is what a real approach is -- the run-up a bowler
-  -- walks before the foul line, no more.
+  -- THE APPROACH: the darker boards left of the foul line, where a bowler
+  -- walks up. A real one is 15ft and this is a little over, because it is
+  -- the part of the picture the player's own hand occupies -- it wants to
+  -- read as somewhere to stand, not as a thin strip.
   --
-  -- It used to be (halfZ - 40) * 0.5, which worked out to 3230px of boards
-  -- behind the foul line: FIFTY-THREE FEET at this scale. That slab was
-  -- what filled the left of the frame and left the ball jammed against the
-  -- edge with nowhere for a thumb to go. Cutting it is what actually
-  -- creates the room -- widening the camera's view only pulled MORE of it
-  -- into shot.
-  local apHalf = (15 * (PIN_ROW_Z - FOUL_Z) / 60) * 0.5
+  -- It was 53ft once, sized off the room rather than off the lane, and
+  -- cutting that back was right. But cutting it is not enough on its own:
+  -- the camera fits ball-to-rack, so 632px of the 780 it had was simply
+  -- OFF SCREEN. See APPROACH_SHOWN in love.draw, which is what actually
+  -- brings it into frame.
+  local apHalf = (19 * (PIN_ROW_Z - FOUL_Z) / 60) * 0.5
   local ap = b3.body_new(world, 0, -20, FOUL_Z - apHalf, 0)
   dbg.box(ap, OUT + 900, 20, apHalf, nil, "deck")
 
@@ -1802,7 +1803,17 @@ function love.draw()
   -- three more rows past PIN_ROW_Z, and fitting only to the headpin pushes
   -- the back six pins off the right edge.
   local backZ = PIN_ROW_Z + 3 * PIN_SPACING * 0.87
-  local nearZ = math.min(bz, PIN_ROW_Z) - 200     -- margin behind the ball
+  -- HOW MUCH APPROACH IS IN SHOT.
+  --
+  -- The fit spans ball-to-rack, so without this the boards behind the foul
+  -- line fall outside the frame entirely -- 632px of a 780px approach was
+  -- off screen, which is why lengthening it alone changed nothing.
+  --
+  -- Measured from the FOUL LINE rather than from the ball, so the amount of
+  -- approach on screen stays put as the ball travels rather than swinging
+  -- with it.
+  local APPROACH_SHOWN = 620
+  local nearZ = math.min(bz - 200, FOUL_Z - APPROACH_SHOWN)
   local midZ  = (nearZ + backZ) * 0.5
   -- CAM_FIT_SLACK is the framing margin. An exact fit puts the ball and the
   -- back of the rack ON the frame edges; tools/framing.mjs measures the gap
