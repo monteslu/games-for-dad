@@ -659,9 +659,24 @@ local function buildRoom()
   -- the camera fits ball-to-rack, so 632px of the 780 it had was simply
   -- OFF SCREEN. See APPROACH_SHOWN in love.draw, which is what actually
   -- brings it into frame.
-  local apHalf = (19 * (PIN_ROW_Z - FOUL_Z) / 60) * 0.5
-  local ap = b3.body_new(world, 0, -20, FOUL_Z - apHalf, 0)
-  dbg.box(ap, OUT + 900, 20, apHalf, nil, "deck")
+  -- IT HAS TO RUN OFF THE FRAME, in both directions.
+  --
+  -- At OUT+900 the approach ended at x=-1162, well inside the room's own
+  -- walls at +-3600 -- so its far corner sat in mid-air with carpet
+  -- visible above and to the left of it, which reads as a plank floating
+  -- in a room rather than as the floor the player is standing on.
+  --
+  -- Widened toward the camera (which stands off at -x) and pushed further
+  -- back in z, so both edges leave the frame and the corner is never seen.
+  -- It is the ground under his feet; ground does not have a corner.
+  -- Deep enough in z that its FAR edge is off the top of the frame too.
+  -- The width fixed the left side, but the receding edge still sloped in
+  -- from x=131 at y=210 down to x=59 at y=320 -- a triangle of the room
+  -- showing through the top-left corner, which is the last place a floor
+  -- is allowed to end.
+  local apHalf = (52 * (PIN_ROW_Z - FOUL_Z) / 60) * 0.5
+  local ap = b3.body_new(world, -700, -20, FOUL_Z - apHalf, 0)
+  dbg.box(ap, OUT + 2600, 20, apHalf, nil, "deck")
 
   -- THE FLOOR of the room, wide and low, running the whole length. It
   -- catches the dim fill light and gives the alley something to stand on.
