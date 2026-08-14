@@ -158,13 +158,18 @@ function M.makeTextures()
   -- ── THE WALLS ───────────────────────────────────────────────────────
   -- Dark panelling, so the bright lane is the thing the eye goes to. A
   -- bowling alley is a dim room with a lit lane in it.
+  -- WARM WALNUT, not near-black. The walls were 0.16/0.13/0.15 -- so dark
+  -- and so nearly neutral that they read as the same void as everything
+  -- else. A bowling alley's panelling is WOOD, and letting it be wood
+  -- gives the room a colour without brightening it enough to compete.
   T.wall = image(128, 128, function(x, y, w)
     local grain = fbm(x / 3, y / 30, 53, 3)
-    local l = 0.86 + (grain - 0.5) * 0.20
+    local fine  = fbm(x / 1.4, y / 11, 59, 2)
+    local l = 0.86 + (grain - 0.5) * 0.26 + (fine - 0.5) * 0.10
     -- vertical panel joints
     local p = (x % 42) / 42
-    if p < 0.04 then l = l * 0.72 end
-    return 0.16 * l, 0.13 * l, 0.15 * l
+    if p < 0.04 then l = l * 0.62 end
+    return 0.30 * l, 0.185 * l, 0.135 * l
   end)
 
   -- ── THE ROOM ────────────────────────────────────────────────────────
@@ -176,20 +181,61 @@ function M.makeTextures()
   -- The floor of the room: dark patterned carpet, the way every alley on
   -- earth is carpeted. Busy at full brightness, but it sits at a fraction
   -- of the lane's value, so it reads as texture rather than as pattern.
-  -- The FIGURE IS SMALL and the CONTRAST IS LOW, both learned by looking:
-  -- a 4-across diamond at this tiling drew a bold checkerboard the size of
-  -- the lane itself, and the eye went to the carpet instead of to the game.
-  -- A carpet should be legible as a texture and invisible as a pattern.
+  -- A REAL ALLEY CARPET: loud, retro, and dark enough to stay furniture.
+  --
+  -- The figure is small and the contrast between the two grounds is low --
+  -- a bold checkerboard at lane scale draws the eye to the floor instead
+  -- of the game. But the first pass over-corrected into a flat
+  -- (18,15,27) field, measured: two thirds of the frame in ONE COLOUR,
+  -- which is not restraint, it is emptiness.
+  --
+  -- So the pattern stays quiet and the COLOUR does the work. Every alley
+  -- on earth carpets in something like this: magenta and teal confetti on
+  -- a deep violet ground, dim enough to sit well under the lane and varied
+  -- enough that the eye finds texture wherever it lands.
   T.floor = image(128, 128, function(x, y, w, h)
     local n = fbm(x / 5, y / 5, 91, 4)
     local u, v = x / w, y / h
     local d = (math.abs(((u * 12) % 1) - 0.5) + math.abs(((v * 12) % 1) - 0.5))
     local fleck = fbm(x / 1.5, y / 1.5, 97, 2)
     local l = 0.55 + n * 0.36 + fleck * 0.20
+
+    -- The two ground tones, violet and a slightly bluer violet. Kept well
+    -- under the lane's value -- a bowling alley is a dark room with a lit
+    -- lane in it, and the moment the floor approaches the lane's
+    -- brightness that reads as a showroom instead.
+    local r, g, b
     if d < 0.44 then
-      return 0.085 * l, 0.070 * l, 0.125 * l
+      r, g, b = 0.105, 0.062, 0.158
+    else
+      r, g, b = 0.082, 0.052, 0.132
     end
-    return 0.070 * l, 0.058 * l, 0.105 * l
+
+    -- CONFETTI, SPARSE AND DIM.
+    --
+    -- The first pass ran flecks at 7% coverage and full saturation, and
+    -- the measured result was a carpet louder than the lane -- the eye
+    -- went straight to the floor. This is a third the density and half the
+    -- brightness: enough that the ground has life wherever you look at it,
+    -- not enough to look AT.
+    --
+    -- Blended rather than replaced, so a fleck is a tint in the pile
+    -- instead of a sticker on top of it.
+    local sp = noise2(math.floor(x / 4), math.floor(y / 4), 131)
+    local fr, fg, fb, amt
+    if sp > 0.988 then
+      fr, fg, fb, amt = 0.42, 0.12, 0.30, 0.60      -- magenta
+    elseif sp > 0.976 then
+      fr, fg, fb, amt = 0.07, 0.28, 0.30, 0.55      -- teal
+    elseif sp > 0.970 then
+      fr, fg, fb, amt = 0.34, 0.23, 0.08, 0.50      -- amber
+    end
+    if fr then
+      r = r * (1 - amt) + fr * amt
+      g = g * (1 - amt) + fg * amt
+      b = b * (1 - amt) + fb * amt
+    end
+    return r * l, g * l, b * l
   end)
 
   -- The ceiling: dark acoustic tile, faintly gridded.
@@ -212,17 +258,27 @@ function M.makeTextures()
   -- picture matters most, which is why the first pass (hard red/violet
   -- chevrons) had to go. Enough warmth to stop the far end being a black
   -- hole; not enough to be looked at.
+  -- MID-CENTURY CHEVRONS, in colour this time.
+  --
+  -- Still dim -- this panel is directly behind the pins and must never
+  -- compete with them at the moment it matters most that they are
+  -- readable. But dim and COLOURED is a different thing from dim and grey:
+  -- the previous version was three near-identical charcoals, which is
+  -- indistinguishable from a black wall at any distance.
+  --
+  -- Teal, plum and amber, which is the palette every alley of that era
+  -- used, at about a third of the lane's brightness.
   T.masking = image(256, 128, function(x, y, w, h)
     local u, v = x / w, y / h
     local n = fbm(x / 6, y / 6, 107, 3)
     local band = math.abs(((u * 3 + v * 0.6) % 1) - 0.5) * 2
     local l = 0.62 + n * 0.30
     if band < 0.34 then
-      return 0.150 * l, 0.105 * l, 0.135 * l
+      return 0.085 * l, 0.255 * l, 0.270 * l      -- teal
     elseif band < 0.62 then
-      return 0.125 * l, 0.100 * l, 0.145 * l
+      return 0.240 * l, 0.105 * l, 0.215 * l      -- plum
     end
-    return 0.100 * l, 0.090 * l, 0.130 * l
+    return 0.265 * l, 0.170 * l, 0.070 * l        -- amber
   end)
 
   -- ── THE BALL ────────────────────────────────────────────────────────

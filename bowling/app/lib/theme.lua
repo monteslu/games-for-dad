@@ -14,6 +14,26 @@ T.lossRed     = {1.0, 0.38, 0.32}     -- bankroll flash on a losing round
 T.quiet       = {0.85, 0.85, 0.80}    -- neutral text (losses stay calm)
 T.dim         = {1, 1, 1, 0.45}
 
+-- ── BOWLING'S OWN COLOURS ─────────────────────────────────────────────
+--
+-- The alley is a dim room with a lit lane in it, which is right for the
+-- 3D but left the UI drawn entirely in white-on-charcoal -- correct, and
+-- drab. These are the accents that put some life back into the flat
+-- layer without competing with the lane for attention.
+--
+-- Warm and saturated, and CHOSEN FOR CONTRAST AGAINST A DARK GROUND:
+-- every one of these sits above 4.5:1 on the near-black the HUD is drawn
+-- over, which matters more here than in most games -- an eighty-five-year-
+-- old eye loses contrast sensitivity long before it loses acuity.
+T.lane        = {0.95, 0.72, 0.36}   -- the maple of the lane itself
+T.strike      = {1.00, 0.55, 0.20}   -- hot orange: the best thing that happens
+T.spare       = {0.45, 0.80, 1.00}   -- cool blue: good, but not a strike
+T.openFrame   = {0.72, 0.74, 0.80}   -- neutral: an ordinary frame
+T.hookLeft    = {0.55, 0.80, 1.00}   -- the two hook directions, mirrored
+T.hookRight   = {1.00, 0.72, 0.35}
+T.meterTrack  = {0.16, 0.15, 0.22}
+T.pinRed      = {0.88, 0.22, 0.26}   -- the pins' own stripe colour
+
 -- card metrics (art is 500x726; keep the ratio)
 T.cardW, T.cardH = 260, 378
 T.cardGap  = 36

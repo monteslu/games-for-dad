@@ -792,15 +792,38 @@ function love.load()
   -- toward the floor, where the alley's own lights spill. Warm rather than
   -- blue, because every other surface in the room is warm and a blue void
   -- behind them reads as outdoors at dusk.
+  -- THE BACKDROP. Not a sky -- this is indoors.
+  --
+  -- A DIM ROOM WITH LIGHTS OVER THE LANE. The first version was a flat
+  -- near-black wash, which is honest about a bowling alley being dark and
+  -- dull as a picture: two thirds of the frame was one colour.
+  --
+  -- Now the room has a source. A warm pool sits behind and above the lane
+  -- where the house lights would be, falling off into a cooler dark at the
+  -- corners -- so the eye is drawn along the lane toward the pins, and the
+  -- empty space reads as depth rather than as nothing.
   dream:setSky(function()
     local g = love.graphics
     g.setDepthMode()
-    for i = 0, 47 do
-      local k = i / 47
-      -- eased so most of the frame stays dark and the lift is near the base
-      local e = k * k
-      g.setColor(0.045 + e * 0.10, 0.038 + e * 0.075, 0.062 + e * 0.085)
-      g.rectangle("fill", 0, i * (1080 / 48), 1920, 1080 / 48 + 1)
+    local ROWS, COLS = 36, 24
+    local rh, cw = 1080 / ROWS, 1920 / COLS
+    for r = 0, ROWS - 1 do
+      local v = (r + 0.5) / ROWS
+      for c = 0, COLS - 1 do
+        local u = (c + 0.5) / COLS
+        -- distance from the warm pool, which sits high and slightly right
+        -- (over the pin deck, which is where a real alley is brightest)
+        local dx, dy = (u - 0.62) * 1.15, (v - 0.30) * 1.55
+        local d = math.sqrt(dx * dx + dy * dy)
+        local warm = math.max(0, 1 - d * 1.22) ^ 2
+        -- a second, weaker pool low and left, over the approach
+        local ax, ay = (u - 0.18) * 1.3, (v - 0.86) * 1.7
+        local ad = math.sqrt(ax * ax + ay * ay)
+        local warm2 = math.max(0, 1 - ad * 1.5) ^ 2 * 0.55
+        local w = warm + warm2
+        g.setColor(0.052 + w * 0.30, 0.043 + w * 0.20, 0.075 + w * 0.13)
+        g.rectangle("fill", c * cw, r * rh, cw + 1, rh + 1)
+      end
     end
     g.setColor(1, 1, 1, 1)
   end)
@@ -1301,6 +1324,48 @@ end
 local SCORE_SIZE = 132
 local STRIP_Y    = 40
 
+-- A HOOKING ARROW: the path a hooked ball takes, as a curve with a head.
+--
+-- Drawn rather than typed. `dir` is -1 for a left hook and +1 for a right
+-- one, and the curve is a quadratic that runs straight for the first
+-- third and bends hard over the last -- the same late break the physics
+-- actually applies, so the picture is a description of the shot rather
+-- than a decoration.
+-- The curve runs ACROSS the bar, not up it: this is a plan view of the
+-- lane, so the ball travels left-to-right (or right-to-left) and bends
+-- toward the end it is pointing at. Drawn thick, because a hairline
+-- squiggle at the end of a 1080px bar is not a signpost.
+local function drawHookArrow(cx, cy, len, dir, colour)
+  local g = love.graphics
+  local N = 18
+  local px, py
+  for i = 0, N do
+    local t = i / N
+    -- along the bar, and bending late -- t^2.6 keeps the first half
+    -- visibly straight, the same late break the physics applies
+    local x = cx + dir * t * len
+    local y = cy - (t ^ 2.6) * len * 0.46
+    if px then
+      g.setLineWidth(5 + t * 6)                     -- thickens into the head
+      g.setColor(colour[1], colour[2], colour[3], 0.42 + t * 0.55)
+      g.line(px, py, x, y)
+    end
+    px, py = x, y
+  end
+  -- The head, pointing along the curve's actual tangent at the end.
+  local hx, hy = px, py
+  local t = 1 - 1 / N
+  local bx = cx + dir * t * len
+  local by = cy - (t ^ 2.6) * len * 0.46
+  local a = math.atan(hy - by, hx - bx)
+  local s = 26
+  g.setColor(colour[1], colour[2], colour[3], 1)
+  g.polygon("fill",
+    hx + math.cos(a) * s * 0.6, hy + math.sin(a) * s * 0.6,
+    hx + math.cos(a + 2.5) * s, hy + math.sin(a + 2.5) * s,
+    hx + math.cos(a - 2.5) * s, hy + math.sin(a - 2.5) * s)
+end
+
 local function drawHUD()
   local g = love.graphics
   local total, frames = scoreGame(rolls)
@@ -1310,12 +1375,18 @@ local function drawHUD()
   -- Label FIRST and above, then the number under it. With the label below,
   -- a one-digit score at 132px was a lone glyph floating over a word it
   -- did not obviously belong to.
+  -- Solid ground under the score too, for the same reason as the strip.
+  g.setColor(0.05, 0.04, 0.07, 0.82)
+  g.rectangle("fill", 30, STRIP_Y - 20, 560, SCORE_SIZE + 100)
+
   g.setFont(ui.font(theme.fontSmall))
   g.setColor(theme.quiet)
   g.print("SCORE", 56, STRIP_Y - 4)
 
+  -- The number in the lane's own maple, which ties the HUD to the thing
+  -- it is reporting on and is warmer than plain white on this ground.
   g.setFont(ui.font(SCORE_SIZE))
-  g.setColor(1, 1, 1)
+  g.setColor(theme.lane)
   g.print(tostring(total), 52, STRIP_Y + 22)
 
   -- FRAME / BALL, under the score rather than centred across the top.
@@ -1330,22 +1401,79 @@ local function drawHUD()
             56, STRIP_Y + SCORE_SIZE + 28)
   end
 
-  -- The frame strip, top right, so the whole game reads at a glance.
-  -- Taller boxes than before: they now carry the running total at a size
-  -- worth reading rather than a 30px afterthought.
+  -- THE FRAME STRIP, top right, so the whole game reads at a glance.
+  --
+  -- COLOURED BY WHAT HAPPENED. A strike is hot orange, a spare is cool
+  -- blue, an ordinary frame is neutral -- so the shape of his game is
+  -- legible from across the room without reading a single number. That is
+  -- the whole point of a scoreboard, and a strip of identical grey boxes
+  -- was not doing it.
   local BOXW, BOXH = 104, 96
   local x0 = 1920 - 52 - BOXW * 10
+
+  -- AN OPAQUE PLATE UNDER THE STRIP. The room behind it is a patterned
+  -- carpet now, and a translucent box over confetti is a box you cannot
+  -- read. Everything in the HUD that carries a number gets solid ground.
+  g.setColor(0.05, 0.04, 0.07, 0.86)
+  g.rectangle("fill", x0 - 14, STRIP_Y - 14, BOXW * 10 + 22, BOXH + 28)
+
+  -- What each frame was, walked from the rolls the same way scoring does.
+  local kind = {}
+  do
+    local i = 1
+    for f = 1, 10 do
+      local a = rolls[i]
+      if a == nil then break end
+      if a == 10 then kind[f] = "strike"; i = i + 1
+      else
+        local b = rolls[i + 1]
+        if b == nil then break end
+        kind[f] = (a + b == 10) and "spare" or "open"
+        i = i + 2
+      end
+    end
+  end
+
   for f = 1, 10 do
     local x = x0 + (f - 1) * BOXW
-    g.setColor(1, 1, 1, f == frameNo and 0.22 or 0.08)
+    local k = kind[f]
+    local c = (k == "strike" and theme.strike)
+           or (k == "spare"  and theme.spare)
+           or (k == "open"   and theme.openFrame)
+           or nil
+
+    -- the box: tinted by result, brightest on the frame being played
+    if c then
+      g.setColor(c[1], c[2], c[3], 0.30)
+    else
+      g.setColor(1, 1, 1, f == frameNo and 0.20 or 0.07)
+    end
     g.rectangle("fill", x, STRIP_Y, BOXW - 6, BOXH)
+
+    -- THE CURRENT FRAME wears a gold ring, which is this family's "you are
+    -- here" marker everywhere else.
+    if f == frameNo and state ~= "done" then
+      g.setColor(theme.gold)
+      g.setLineWidth(4)
+      g.rectangle("line", x, STRIP_Y, BOXW - 6, BOXH)
+    end
+
     g.setFont(ui.font(theme.fontSmall - 4))
-    g.setColor(1, 1, 1, 0.70)
+    g.setColor(1, 1, 1, 0.68)
     g.printf(tostring(f), x, STRIP_Y + 6, BOXW - 6, "center")
+
+    -- X for a strike, / for a spare -- the marks a real scoresheet uses,
+    -- and they read faster than the number does.
+    if k == "strike" or k == "spare" then
+      g.setFont(ui.font(theme.fontSmall))
+      g.setColor(c[1], c[2], c[3], 0.95)
+      g.printf(k == "strike" and "X" or "/", x, STRIP_Y + 28, BOXW - 6, "center")
+    end
+
     if frames[f] then
-      g.setFont(ui.font(theme.fontMid + 4))
+      g.setFont(ui.font(theme.fontMid))
       g.setColor(1, 1, 1)
-      g.printf(tostring(frames[f]), x, STRIP_Y + 36, BOXW - 6, "center")
+      g.printf(tostring(frames[f]), x, STRIP_Y + 56, BOXW - 6, "center")
     end
   end
 
@@ -1354,37 +1482,69 @@ local function drawHUD()
   -- be changed.
   if state == "aim" then
     local X, Y, W, H = SPIN_UI_X, SPIN_UI_Y, SPIN_UI_W, SPIN_UI_H
+    -- and solid ground under the meter, so the coloured track is read
+    -- against black rather than against carpet
+    g.setColor(0.05, 0.04, 0.07, 0.88)
+    g.rectangle("fill", X - 26, Y - 58, W + 52, H + 92)
     g.setFont(ui.font(theme.fontSmall - 2))
     g.setColor(theme.quiet)
     g.printf(spinSet and "SPIN SET" or "TAP TO SET SPIN",
              X, Y - 46, W, "center")
 
-    -- the track
-    g.setColor(1, 1, 1, 0.10)
-    g.rectangle("fill", X, Y, W, H)
+    -- THE TRACK, tinted from hook-left through neutral to hook-right, so
+    -- the bar itself says which end does what before the arrows are read.
+    local SEG = 40
+    for i = 0, SEG - 1 do
+      local t = i / (SEG - 1) * 2 - 1              -- -1..1 across the bar
+      local c = t < 0 and theme.hookLeft or theme.hookRight
+      local k = math.abs(t)
+      g.setColor(c[1] * k + theme.meterTrack[1] * (1 - k),
+                 c[2] * k + theme.meterTrack[2] * (1 - k),
+                 c[3] * k + theme.meterTrack[3] * (1 - k),
+                 0.30 + k * 0.30)
+      g.rectangle("fill", X + i * (W / SEG), Y, W / SEG + 1, H)
+    end
 
     -- THE DEAD ZONE, drawn. A visible band in the middle that says "this
     -- much is straight" -- so the wide tolerance is a promise the player
     -- can see rather than a kindness hidden in the code.
     local dw = W * SPIN_DEAD
-    g.setColor(1, 1, 1, 0.13)
+    g.setColor(0.82, 0.84, 0.90, 0.22)
     g.rectangle("fill", X + W / 2 - dw, Y, dw * 2, H)
-
-    -- hook direction, at the ends
-    g.setFont(ui.font(theme.fontMid))
-    g.setColor(1, 1, 1, 0.34)
-    g.printf("<<", X + 16, Y + H / 2 - 26, 120, "left")
-    g.printf(">>", X + W - 136, Y + H / 2 - 26, 120, "right")
     g.setColor(1, 1, 1, 0.30)
-    g.printf("straight", X + W / 2 - 120, Y + H / 2 - 22, 240, "center")
+    g.setLineWidth(2)
+    g.rectangle("line", X + W / 2 - dw, Y, dw * 2, H)
+
+    -- HOOK DIRECTION, DRAWN AS THE PATH THE BALL WILL TAKE.
+    --
+    -- "<<" and ">>" are a programmer's shorthand for "more of this way".
+    -- A curving arrow is the actual thing: it shows the ball going down
+    -- the lane and bending, which is what the setting does, and it needs
+    -- no reading at all. Mirrored either side of centre so the two hooks
+    -- are visibly opposites.
+    -- INSIDE the bar and pointing outward, one per hook direction. They
+    -- start just outside the dead zone and run toward their own end, so
+    -- the bar reads as "straight here, and more hook the further you go".
+    local dz = W * SPIN_DEAD
+    drawHookArrow(X + W / 2 - dz - 30, Y + H / 2 + 16, 176, -1, theme.hookLeft)
+    drawHookArrow(X + W / 2 + dz + 30, Y + H / 2 + 16, 176,  1, theme.hookRight)
+
+    g.setFont(ui.font(theme.fontSmall - 4))
+    g.setColor(1, 1, 1, 0.42)
+    g.printf("STRAIGHT", X + W / 2 - 120, Y + H / 2 - 18, 240, "center")
 
     -- THE MARKER. Fat, so it is easy to track: this is the thing his eye
     -- follows and his hand answers.
     local mx = X + (spinPos * 0.5 + 0.5) * W
+    -- a soft glow under it, so a moving white bar on a coloured track
+    -- still reads as the thing to watch
+    g.setColor(1, 1, 1, 0.18)
+    g.rectangle("fill", mx - 19, Y - 16, 38, H + 32)
     g.setColor(spinSet and theme.gold or { 1, 1, 1 })
     g.rectangle("fill", mx - 9, Y - 12, 18, H + 24)
     if spinSet then
       g.setColor(theme.gold)
+      g.setLineWidth(4)
       g.rectangle("line", X, Y, W, H)
     end
   end
