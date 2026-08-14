@@ -1,9 +1,10 @@
 # Games for Dad
 
 Original games built for my dad: 85 years old, playing on a TV from the
-couch with a gamepad. Four card games, two played with a cue, a
-match-three and a round of mini golf. Every design decision follows from
-that player: no timers, no bust-outs, no button chords, big readable type.
+couch with a gamepad. Five card games, two played with a cue, a
+match-three, a round of mini golf and ten frames of bowling. Every design
+decision follows from that player: no timers, no bust-outs, no button
+chords, big readable type.
 
 The games are [wasmcart](https://www.npmjs.com/package/wasmcart) carts
 written in Lua. Each one is a single portable `.wasc` file that runs anywhere the
@@ -37,6 +38,34 @@ Partnership Spades: you and a CPU partner against two CPUs. Books, bags,
 nil, first team to 500.
 
 <img src="docs/shots/spades.png" alt="Spades" width="480">
+
+### Pinochle &mdash; `pinochle/`
+
+Four-handed partnership pinochle, and the second trick-taking game here.
+48 cards &mdash; two of every A, 10, K, Q, J, 9 &mdash; and the ten ranks
+*second*, between the ace and the king.
+
+Bid for the contract, name trump, lay down meld, then twelve tricks. First
+team to 1500. **Shaped deliberately after Spades**: same seats, same
+controls, same table, because the point of a second trick-taking game is
+that it feels like the one you already know.
+
+**The meld panel names every meld and what it is worth** &mdash; "PINOCHLE
+40", "ROYAL MARRIAGE 40", "KINGS AROUND 80". Meld-spotting is the hardest
+part of pinochle to learn, so the game does it and shows its working,
+which is the same trick the poker games use when they ring the cards that
+made the hand.
+
+**Illegal cards are dimmed, never an error.** Pinochle's obligations are
+strict &mdash; follow suit, beat the winner if you can, trump if void,
+overtrump if trumped &mdash; and easy to break by accident. Greying out
+what you cannot play removes the whole category of "why won't it let me".
+
+The rules run headless: `tools/simulate.lua` plays thousands of complete
+hands with no engine at all and asserts every one totals exactly 250 trick
+points. See [docs/PINOCHLE.md](docs/PINOCHLE.md).
+
+<img src="docs/shots/pinochle.png" alt="Pinochle" width="480">
 
 ### Eight Ball &mdash; `eightball/`
 
@@ -215,7 +244,7 @@ mapped onto the scoreboard (wins loud, losses quiet, nothing shames).
 - `tools/` - headless drivers used to verify a change without a device
 - `<game>/main.wasm` - the wasmcart-lua engine the cart ships with.
   Committed for the card games; a build artifact for any game with a
-  `build.sh` (bowling, combo, eightball, jewels, minigolf)
+  `build.sh` (bowling, combo, eightball, jewels, minigolf, pinochle)
 - `<game>/<game>.wasc` - the packed, playable cart, same split
 - `<game>/tools/` - per-game headless test drivers, where a game has them
 - `common/` - the shared card-table library and assets the games are
@@ -223,7 +252,7 @@ mapped onto the scoreboard (wins loud, losses quiet, nothing shames).
 - `docs/` - how the games are built, the architecture, and the design
   rules ([start here](docs/MAKING_GAMES.md)). Per-game notes where a game
   earned them: [BOWLING.md](docs/BOWLING.md), [COMBO.md](docs/COMBO.md),
-  [SPADES.md](docs/SPADES.md)
+  [PINOCHLE.md](docs/PINOCHLE.md), [SPADES.md](docs/SPADES.md)
 
 ## Rebuilding a cart
 
