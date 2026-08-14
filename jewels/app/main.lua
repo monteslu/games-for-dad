@@ -59,7 +59,6 @@ local lastGain, lastGainT = 0, 0
 local padUsed = false
 local statusText, statusTimer = nil, 0
 
-local IDLE_HINT_AFTER = 8.0      -- seconds of no input before a hint offers itself
 
 -- view cells carry the animation. The GRID is always the truth; view is
 -- only ever a visual offset from it, which means a dropped frame or an
@@ -465,16 +464,24 @@ function love.update(dt)
     dragFrom = nil
   end
 
-  -- The idle hint. If he has been looking for a while, the game quietly
-  -- offers a move. It is never a penalty and never costs anything.
-  if state == "idle" then
-    if acted then
-      hintTimer = 0
-      if hintMove then hintMove = nil end
-    else
-      hintTimer = hintTimer + dt
-      if hintTimer > IDLE_HINT_AFTER and not hintMove then showHint() end
-    end
+  -- HINTS ARE ASKED FOR, NEVER OFFERED.
+  --
+  -- This used to show one after eight idle seconds. That reads as a clock:
+  -- sitting and thinking becomes a race to move before the game decides you
+  -- are stuck, which is the exact pressure this whole family of games
+  -- exists to remove. Nothing here moves unless he moves it, and that has
+  -- to include the help.
+  --
+  -- The HINT button is always there and costs nothing. Taking as long as
+  -- you like is now genuinely free.
+  -- A requested hint fades on its own so it never becomes clutter. It does
+  -- NOT clear on `acted`: pressing the HINT button is itself an action, and
+  -- clearing on it wiped the hint in the same frame it was asked for --
+  -- the status text appeared and the highlight never did. A hint that is
+  -- still up when he swaps is cleared by trySwap, where the move happens.
+  if hintMove then
+    hintTimer = hintTimer - dt
+    if hintTimer <= 0 then hintMove, hintTimer = nil, 0 end
   end
 end
 
