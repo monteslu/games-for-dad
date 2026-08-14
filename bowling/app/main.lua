@@ -33,12 +33,14 @@ local PPM      = 90                 -- pixels per metre
 local GRAVITY  = -9.81 * PPM
 
 local LANE_W   = 300                -- 42in at this scale, rounded for the eye
--- SHORTER THAN LIFE, deliberately. A real lane is 60ft, which at any scale
--- that keeps the ball a sensible size puts the rack ~3400px away: the pin
--- triangle then subtends so few pixels that its depth vanishes and ten
--- pins read as one flat row. 2000 keeps the whole alley legible in frame
--- while still feeling like a long roll.
-local LANE_LEN = 2000               -- foul line to the pit
+-- LONG, close to life. A real lane is 60ft from foul line to headpin and
+-- 42in wide -- about 17:1. This ran at 4.6:1 for a while because a LEVEL
+-- side camera flattens a long rack into a single row, and the length had to
+-- pay for that. The 45-degree tilt fixes it at the source: looking down at
+-- the deck opens the four rows out again, so the lane can be its real
+-- proportions. 4200:300 is 14:1, most of the way there while keeping the
+-- ball big enough to see.
+local LANE_LEN = 4600               -- foul line to the pit
 local LANE_Y   = 0                  -- the lane surface sits at y=0
 local GUTTER_W = 90
 local WALL_H   = 60
@@ -50,7 +52,7 @@ local PIN_H    = 130
 -- Where the pins stand. Ten pins, four rows, 12in centres -- the real
 -- triangle, pointing back at the bowler.
 local PIN_SPACING = 96
-local PIN_ROW_Z   = 1500            -- the headpin
+local PIN_ROW_Z   = 4200            -- the headpin
 
 -- Physics feel. A bowling ball is heavy and barely bounces; pins are light
 -- and knock each other over, which is the entire game.
@@ -60,16 +62,20 @@ local BALL_FRICTION, BALL_REST, BALL_ROLL = 0.18, 0.08, 0.006
 -- which looks like a physics demo rather than bowling.
 local PIN_FRICTION,  PIN_REST            = 0.55, 0.08
 
--- SIDE VIEW. The camera stands off the left rail at bowler's-eye height and
--- looks square across the lane, so a throw travels left-to-right across the
--- screen. It backs off as the ball-to-rack span grows so both stay in frame;
--- this floor keeps it from crowding the pins on the last few feet.
+-- SIDE VIEW. The camera stands off the left rail, rides above the deck, and
+-- looks square across the lane and down at it, so a throw travels
+-- left-to-right across the screen. It backs off as the ball-to-rack span
+-- grows so both stay in frame; this floor keeps it from crowding the pins
+-- on the last few feet.
 local SIDE_CAM_MIN_X = 900
-local SIDE_CAM_Y     = 220
+-- How far the camera rides above the deck, as an ANGLE. 45 degrees is
+-- halfway between a level side view (which flattens the rack into one row)
+-- and a top-down plan (which loses the pins standing up).
+local CAM_TILT       = math.rad(45)
 -- The camera's FOV is VERTICAL. On a 16:9 frame the horizontal half-angle
 -- is what actually has to cover the lane's length, so the fitting maths
 -- works from this, not from the 56 passed to setFov.
-local CAM_FOV        = 56
+local CAM_FOV        = 42
 local CAM_HALF_H     = math.atan(math.tan(math.rad(CAM_FOV) * 0.5) * (1920 / 1080))
 local CAM_FIT_SLACK  = 1.10        -- breathing room, see the fit in love.draw
 
@@ -156,12 +162,47 @@ local function pinSpots()
   return spots
 end
 
+-- A PIN, as a stack of tapered hulls on one dynamic body.
+--
+-- It was a single capsule, and a capsule is the wrong shape for this in a
+-- way you can feel: it stands on a hemisphere, so it balances on a curve,
+-- self-rights after a glancing hit, and refuses to stay down. A real pin
+-- has a FLAT base, which is what makes it tip and stay tipped.
+--
+-- Box3D cannot help here with a mesh or a compound -- both are static-only
+-- ("Mesh collision only creates contacts on static bodies") and a pin is
+-- dynamic. What it does have is hull builders: b3CreateCylinder takes a
+-- yOffset, so several hulls attach to ONE dynamic body and fuse. That is
+-- what these four sections are.
+--
+-- Proportions follow a real pin: 15in tall, 2.25in across the base, 4.7in
+-- at the belly, waisted to ~1.8in at the neck, rounded head.
+local PIN_SEG = 14                  -- sides per hull; round enough to roll
 local function newPin(x, z)
   local b = b3.body_new(world, x, PIN_H / 2, z, 2)     -- 2 = dynamic
-  -- A pin is a capsule: round enough to roll and scatter, tall enough to
-  -- topple. A box would slide instead of falling over.
-  local s = dbg.capsule(b, PIN_H / 2 - PIN_R, PIN_R, 0.9)
-  b3.shape_set_material(s, PIN_FRICTION, PIN_REST)
+
+  -- Heights as fractions of PIN_H, measured from the pin's own centre
+  -- (the body origin sits at PIN_H/2, so the base is at -PIN_H/2).
+  local H = PIN_H
+  local rBase, rBelly, rNeck, rHead = PIN_R * 0.92, PIN_R * 1.30, PIN_R * 0.56, PIN_R * 0.80
+
+  -- base: a flat-bottomed cylinder, barely tapered. Wide enough to STAND
+  -- on -- the first pass ran it at 0.62 and the pins came to a point like
+  -- skittles, which both looks wrong and makes them tip too easily.
+  local s1 = dbg.cylinder(b, H * 0.10, rBase, -H * 0.45, PIN_SEG, 0.9)
+  -- the flare from base up into the belly
+  local s2 = dbg.cone(b, H * 0.20, rBase, rBelly, -H * 0.30, PIN_SEG, 0.9)
+  -- belly: the widest part, nearly straight
+  local s3 = dbg.cone(b, H * 0.16, rBelly, rBelly * 0.96, -H * 0.12, PIN_SEG, 0.9)
+  -- neck: the waist, tapering hard
+  local s4 = dbg.cone(b, H * 0.28, rBelly * 0.96, rNeck, H * 0.10, PIN_SEG, 0.9)
+  -- head: flares back out, then a rounded cap rather than a point
+  local s5 = dbg.cone(b, H * 0.16, rNeck, rHead, H * 0.32, PIN_SEG, 0.9)
+  local s6 = dbg.cone(b, H * 0.10, rHead, rHead * 0.62, H * 0.45, PIN_SEG, 0.9)
+
+  for _, s in ipairs({ s1, s2, s3, s4, s5, s6 }) do
+    b3.shape_set_material(s, PIN_FRICTION, PIN_REST)
+  end
   b3.body_set_linear_damping(b, 0.6)
   b3.body_set_angular_damping(b, 0.7)
   return { body = b, x = x, z = z, down = false }
@@ -354,6 +395,10 @@ local function clearDeadwood()
     if p.down then
       b3.body_set_transform(p.body, p.x, -900, p.z, 0, 1, 0, 0)
       b3.body_set_velocity(p.body, 0, 0, 0)
+      -- Parked under the deck is not the same as gone: the default renderer
+      -- draws every body it tracks, so without this the swept pins hang
+      -- visibly below the lane. The longer lane made that obvious.
+      dbg.setBodyVisible(p.body, false)
     end
   end
 end
@@ -364,6 +409,7 @@ local function resetPins()
     b3.body_set_transform(p.body, p.x, PIN_H / 2, p.z, 0, 1, 0, 0)
     b3.body_set_velocity(p.body, 0, 0, 0)
     b3.body_set_angular_velocity(p.body, 0, 0, 0)
+    dbg.setBodyVisible(p.body, true)   -- undo clearDeadwood
   end
 end
 
@@ -599,11 +645,28 @@ function love.draw()
   -- and fails below 14px, which is how this number was chosen rather than
   -- guessed at.
   local spanZ = ((backZ - nearZ) + 260) * CAM_FIT_SLACK
-  local dist  = math.max(SIDE_CAM_MIN_X, spanZ * 0.5 / math.tan(CAM_HALF_H))
-  -- Aim at pin height, so the alley sits centred instead of hugging the
-  -- bottom of the frame with dead sky above it.
-  local eye = dream.vec3(-dist / U, SIDE_CAM_Y / U, midZ / U)
-  local tgt = dream.vec3(0, PIN_H * 0.5 / U, midZ / U)
+  -- The fit needs the SLANT distance -- how far the camera actually is from
+  -- the lane -- not its horizontal offset. Tilting moves the eye up and back
+  -- along the slant, so fitting on the horizontal run alone pushes the whole
+  -- alley further away and shrinks it (measured: right margin 71px -> 359px
+  -- the moment the tilt went in). Dividing by cos(tilt) holds the apparent
+  -- size fixed as the angle changes.
+  local slant = spanZ * 0.5 / math.tan(CAM_HALF_H)
+  local dist  = math.max(SIDE_CAM_MIN_X, slant * math.cos(CAM_TILT))
+  -- TILTED DOWN toward the bowler. Level with the deck, the lane is a thin
+  -- band seen edge-on and the pin triangle collapses into a single row --
+  -- the depth of the rack, which is what tells a strike from a split, is
+  -- exactly what a level camera throws away. Riding above it opens the deck
+  -- out so the four rows read as four rows.
+  --
+  -- The height is derived from the distance, not set independently: rise
+  -- over run IS the tilt angle, so a fixed height would mean the angle
+  -- drifted every time the fit moved the camera in or out.
+  local tgtY = PIN_H * 0.5
+  local eye = dream.vec3(-dist / U,
+                         (tgtY + dist * math.tan(CAM_TILT)) / U,
+                         midZ / U)
+  local tgt = dream.vec3(0, tgtY / U, midZ / U)
 
   local cam = dream:newCamera(camWorld(eye, tgt))
   cam:setFov(CAM_FOV)
