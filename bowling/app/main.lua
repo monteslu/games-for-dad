@@ -15,7 +15,8 @@
 -- SCALE. Physics runs in cart pixels via b3.set_meter, as everywhere else
 -- in this family. A real lane is 60 feet from foul line to headpin and 42
 -- inches wide; at 34 px per foot that is 2040 x 119 -- too long for one
--- screen, so the camera rides behind the ball down a lane laid along +z.
+-- screen, so the lane is laid along +z and the camera watches it from the
+-- side, square-on, framing the ball and the rack together.
 --
 -- THE FAMILY RULE: nothing moves unless he moves it. No shot clock, no
 -- timer on the aim, and the ball waits at the foul line until he throws.
@@ -58,6 +59,19 @@ local BALL_FRICTION, BALL_REST, BALL_ROLL = 0.18, 0.08, 0.006
 -- at 0.35 restitution and they flew the width of the lane off one hit,
 -- which looks like a physics demo rather than bowling.
 local PIN_FRICTION,  PIN_REST            = 0.55, 0.08
+
+-- SIDE VIEW. The camera stands off the left rail at bowler's-eye height and
+-- looks square across the lane, so a throw travels left-to-right across the
+-- screen. It backs off as the ball-to-rack span grows so both stay in frame;
+-- this floor keeps it from crowding the pins on the last few feet.
+local SIDE_CAM_MIN_X = 900
+local SIDE_CAM_Y     = 220
+-- The camera's FOV is VERTICAL. On a 16:9 frame the horizontal half-angle
+-- is what actually has to cover the lane's length, so the fitting maths
+-- works from this, not from the 56 passed to setFov.
+local CAM_FOV        = 56
+local CAM_HALF_H     = math.atan(math.tan(math.rad(CAM_FOV) * 0.5) * (1920 / 1080))
+local CAM_FIT_SLACK  = 1.10        -- breathing room, see the fit in love.draw
 
 -- Throwing. Pull back from the ball like every other game in the family.
 local MAX_PULL  = 300
@@ -439,9 +453,18 @@ function love.update(dt)
     local moving = speed > 40
     if not moving then
       for _, p in ipairs(pins) do
-        local pvx, pvy, pvz = b3.body_velocity(p.body)
-        if math.sqrt(pvx * pvx + pvy * pvy + pvz * pvz) > 30 then
-          moving = true; break
+        -- A pin knocked clean off the deck is out of play. It is also in
+        -- FREE FALL, so its speed grows without bound -- and a settle test
+        -- that watches every pin's velocity then never fires: measured
+        -- 128 -> 227 -> 1024 -> 1471 over 900 frames while the ball sat
+        -- still at 0, and the roll never ended. Ignore anything that has
+        -- left the world.
+        local _, py, _ = b3.body_position(p.body)
+        if py > -400 then
+          local pvx, pvy, pvz = b3.body_velocity(p.body)
+          if math.sqrt(pvx * pvx + pvy * pvy + pvz * pvz) > 30 then
+            moving = true; break
+          end
         end
       end
     end
@@ -550,22 +573,41 @@ end
 function love.draw()
   love.graphics.clear(0.05, 0.06, 0.10, 1)
 
-  -- THE CAMERA rides behind the ball and looks down the lane, so the pins
-  -- grow as the ball travels. Fixed height, so it reads as a lane rather
-  -- than a chase cam.
+  -- THE CAMERA sits off to the side of the lane and looks across it, so the
+  -- ball's travel reads as motion across the screen rather than as a dot
+  -- growing smaller. It tracks the ball down the lane but hangs back near
+  -- the rack once the ball is close, so the pin action stays framed.
   local bx, by, bz = 0, BALL_R, 120
   if ballBody then bx, by, bz = b3.body_position(ballBody) end
-  -- Ride behind the ball, but never fall so far back that the lane becomes
-  -- a thin wedge and the pins a smudge on the horizon. Clamped to stay
-  -- within a fixed distance of whichever is nearer, the ball or the rack.
-  local camZ = math.min(bz - 500, PIN_ROW_Z - 700)
-  local eye = dream.vec3(bx * 0.4 / U, 300 / U, camZ / U)
-  local look = math.min(bz + 700, PIN_ROW_Z + 120)
-  local tgt = dream.vec3(bx * 0.2 / U, 70 / U, look / U)
+  -- Look PERPENDICULAR to the lane. Aiming the camera down-lane at all
+  -- turns the alley into a diagonal wedge running off the corner of the
+  -- screen; square-on keeps the lane a level band and the pins upright.
+  --
+  -- The camera centres on the MIDPOINT of ball and rack and stands back far
+  -- enough to hold that whole span. Tracking the ball's own z instead puts
+  -- the pins off the right edge for the entire roll, which is the one thing
+  -- a side view exists to show.
+  --
+  -- Frame against the BACK of the rack, not the headpin. The triangle runs
+  -- three more rows past PIN_ROW_Z, and fitting only to the headpin pushes
+  -- the back six pins off the right edge.
+  local backZ = PIN_ROW_Z + 3 * PIN_SPACING * 0.87
+  local nearZ = math.min(bz, PIN_ROW_Z) - 200     -- margin behind the ball
+  local midZ  = (nearZ + backZ) * 0.5
+  -- CAM_FIT_SLACK is the framing margin. An exact fit puts the ball and the
+  -- back of the rack ON the frame edges; tools/framing.mjs measures the gap
+  -- and fails below 14px, which is how this number was chosen rather than
+  -- guessed at.
+  local spanZ = ((backZ - nearZ) + 260) * CAM_FIT_SLACK
+  local dist  = math.max(SIDE_CAM_MIN_X, spanZ * 0.5 / math.tan(CAM_HALF_H))
+  -- Aim at pin height, so the alley sits centred instead of hugging the
+  -- bottom of the frame with dead sky above it.
+  local eye = dream.vec3(-dist / U, SIDE_CAM_Y / U, midZ / U)
+  local tgt = dream.vec3(0, PIN_H * 0.5 / U, midZ / U)
 
   local cam = dream:newCamera(camWorld(eye, tgt))
-  cam:setFov(56)
-  setProjection(eye, tgt, 56)
+  cam:setFov(CAM_FOV)
+  setProjection(eye, tgt, CAM_FOV)
 
   dream:prepare()
   dbg.draw()
