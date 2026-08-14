@@ -55,7 +55,15 @@ local LANE_W   = 344
 -- the deck opens the four rows out again, so the lane can be its real
 -- proportions. 4200:300 is 14:1, most of the way there while keeping the
 -- ball big enough to see.
-local LANE_LEN = 4600               -- foul line to the pit
+-- SHORTENED 10%, from 4600. The ball starts at the far left of the frame
+-- and sat about 150px from the edge -- close enough that a thumb coming in
+-- from the left of a tablet lands on it rather than beside it. A shorter
+-- run brings the foul line in and gives that hand somewhere to start.
+--
+-- The pins move with it (PIN_ROW_Z below), so the RUN shortens rather than
+-- the rack sliding down a longer lane -- the proportions of the alley stay
+-- what they were.
+local LANE_LEN = 4140               -- foul line to the pit
 local LANE_Y   = 0                  -- the lane surface sits at y=0
 local GUTTER_W = 90
 local WALL_H   = 60
@@ -85,7 +93,7 @@ local PIN_H    = 120
 -- Where the pins stand. Ten pins, four rows, 12in centres -- the real
 -- triangle, pointing back at the bowler.
 local PIN_SPACING = 96
-local PIN_ROW_Z   = 4200            -- the headpin
+local PIN_ROW_Z   = 3740            -- the headpin, moved with the lane
 
 -- ── PIN ACTION ────────────────────────────────────────────────────────
 --
@@ -644,7 +652,9 @@ local function buildRoom()
   -- THE BACK WALL behind the pit, the surface the pins are seen against.
   -- It is the backdrop of every shot, so it gets the masking that a real
   -- alley has above the deck.
-  local bw = b3.body_new(world, 0, ROOM_Y / 2, LANE_LEN + 620, 0)
+  -- Well clear of the pit's far end (4709 with the shortened lane), so
+  -- the backdrop never intersects the well the pins fall into.
+  local bw = b3.body_new(world, 0, ROOM_Y / 2, LANE_LEN + 900, 0)
   dbg.box(bw, ROOM_X, ROOM_Y / 2, 20, nil, "masking")
 
   -- The wall behind the BOWLER, closing the room at the near end.
@@ -1752,7 +1762,18 @@ function love.draw()
   -- three more rows past PIN_ROW_Z, and fitting only to the headpin pushes
   -- the back six pins off the right edge.
   local backZ = PIN_ROW_Z + 3 * PIN_SPACING * 0.87
-  local nearZ = math.min(bz, PIN_ROW_Z) - 200     -- margin behind the ball
+  -- ROOM BEHIND THE BALL, and it is asymmetric on purpose.
+  --
+  -- The ball starts at the far left of the frame and a thumb coming in from
+  -- the left edge of a tablet needs somewhere to land that is not on top of
+  -- it. Widening CAM_FIT_SLACK would not do it -- that pushes both edges out
+  -- equally and just shrinks the alley -- so the margin goes HERE, on the
+  -- near side of the fit only.
+  --
+  -- Measured: at 200 the ball sat 197px from the left edge; at 700 it sits
+  -- far enough in that a hand has real room. Shortening the lane alone did
+  -- NOT achieve this, because the fit simply zoomed in to compensate.
+  local nearZ = math.min(bz, PIN_ROW_Z) - 700
   local midZ  = (nearZ + backZ) * 0.5
   -- CAM_FIT_SLACK is the framing margin. An exact fit puts the ball and the
   -- back of the rack ON the frame edges; tools/framing.mjs measures the gap
