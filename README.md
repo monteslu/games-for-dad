@@ -112,6 +112,35 @@ is baked into one texture variant per face direction because this engine's
 
 <img src="docs/shots/minigolf.png" alt="Minigolf" width="480">
 
+### Bowling &mdash; `bowling/`
+
+Ten frames of real ten-pin, scored properly -- strikes carry the next two
+balls, spares the next one, and the tenth earns its fill balls.
+
+**Three things to set, and only one of them is required.** Tap the sweeping
+meter to choose spin, drag back from the ball to aim and load, let go to
+throw. The middle of the meter is a wide "straight" band, so tapping
+without watching gives a straight ball and a perfectly good game -- the
+hook is there for anyone who wants it and costs nothing to ignore.
+
+**Everything is built on the physics.** Every solid thing -- lane, gutters,
+pins, ball -- is made through `love.physics3d.debug`, which builds the
+collision shape and the mesh that draws it from the same numbers. There is
+no second description of the geometry anywhere, so the picture cannot
+disagree with the simulation.
+
+**The pins knock each other down**, which is the whole game: a ball can only
+touch three or four of them, and the rest fall because their neighbours hit
+them. The proportions are real -- pins on 12in centres, 4.766in at the
+belly, a 4:1 ball-to-pin mass ratio -- because the chain reaction is
+sensitive to all of it. See [docs/BOWLING.md](docs/BOWLING.md).
+
+The hook is a real one: side rotation about the direction of travel plus a
+lateral force that ramps in over the back half of the lane, so the ball
+tracks straight through the oil and turns late.
+
+<img src="docs/shots/bowling.png" alt="Bowling" width="480">
+
 ## Playing
 
 ```
@@ -185,14 +214,16 @@ mapped onto the scoreboard (wins loud, losses quiet, nothing shames).
   foreground)
 - `tools/` - headless drivers used to verify a change without a device
 - `<game>/main.wasm` - the wasmcart-lua engine the cart ships with.
-  Committed for the card games; a build artifact for the three with a
-  `build.sh`
+  Committed for the card games; a build artifact for any game with a
+  `build.sh` (bowling, combo, eightball, jewels, minigolf)
 - `<game>/<game>.wasc` - the packed, playable cart, same split
 - `<game>/tools/` - per-game headless test drivers, where a game has them
 - `common/` - the shared card-table library and assets the games are
   built from (`common/sync.sh <game>` copies them into a cart)
 - `docs/` - how the games are built, the architecture, and the design
-  rules ([start here](docs/MAKING_GAMES.md))
+  rules ([start here](docs/MAKING_GAMES.md)). Per-game notes where a game
+  earned them: [BOWLING.md](docs/BOWLING.md), [COMBO.md](docs/COMBO.md),
+  [SPADES.md](docs/SPADES.md)
 
 ## Rebuilding a cart
 

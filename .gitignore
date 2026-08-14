@@ -1,0 +1,19 @@
+# BUILD ARTIFACTS, for any game with a build.sh.
+#
+# A .wasc is a zip of the prebuilt engine plus the game's Lua, and main.wasm
+# IS that engine -- both are reproduced by `./build.sh` in about a second and
+# rebuilt from source by CI on every release. Committing them means a 3.4MB
+# binary diff every time a single line of Lua changes.
+#
+# The card games are different: they have no build.sh and ship a committed
+# cart, which is why this is not a blanket *.wasc.
+bowling/bowling.wasc
+bowling/main.wasm
+combo/combo.wasc
+combo/main.wasm
+eightball/eightball.wasc
+eightball/main.wasm
+jewels/jewels.wasc
+jewels/main.wasm
+minigolf/minigolf.wasc
+minigolf/main.wasm
