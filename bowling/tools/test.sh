@@ -21,6 +21,10 @@ echo "=== camera framing ==="
 node "$HERE/framing.mjs"
 
 echo
+echo "=== pin action ==="
+node "$HERE/pinaction.mjs"
+
+echo
 echo "=== ten-frame game ==="
 node "$HERE/playgame.mjs"
 

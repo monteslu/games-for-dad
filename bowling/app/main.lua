@@ -69,13 +69,46 @@ local PIN_H    = 130
 local PIN_SPACING = 96
 local PIN_ROW_Z   = 4200            -- the headpin
 
--- Physics feel. A bowling ball is heavy and barely bounces; pins are light
--- and knock each other over, which is the entire game.
-local BALL_FRICTION, BALL_REST, BALL_ROLL = 0.18, 0.08, 0.006
--- Pins topple and scatter; they do not cartwheel. The first pass had them
--- at 0.35 restitution and they flew the width of the lane off one hit,
--- which looks like a physics demo rather than bowling.
-local PIN_FRICTION,  PIN_REST            = 0.55, 0.08
+-- ── PIN ACTION ────────────────────────────────────────────────────────
+--
+-- The pins knocking EACH OTHER down is the entire game. A ball 8.5in across
+-- can physically touch three or four pins in a ten-pin rack; the other six
+-- or seven fall because the pins they were standing next to hit them. That
+-- chain reaction is what separates a strike from a split, and it is the
+-- thing a bowling game has to get right.
+--
+-- IT WAS NOT HAPPENING. Measured across a spread of aims, a dead-centre
+-- hit took 9 pins but EVERY pocket and edge hit took exactly 1 -- a pin
+-- would topple and its neighbours would ignore it. Three causes, all here:
+--
+--   1. DAMPING. Pins ran at 0.6 linear / 0.7 angular, which bleeds a struck
+--      pin's velocity away almost as fast as it is given, so it fell over
+--      in place instead of travelling into its neighbours. Real pins are
+--      hardwood on hardwood: they slide and tumble a long way, and the only
+--      honest damping is the friction that is already modelled.
+--   2. RESTITUTION 0.08 -- nearly dead. A pin absorbed the impact instead
+--      of passing it on. Maple on maple is springy; a pin struck hard
+--      visibly bounces off its neighbour.
+--   3. MASS RATIO 7.66:1. A real ball is 14lb against a 3.5lb pin, so 4:1.
+--      At nearly twice that the ball ploughs straight through the rack
+--      barely deflecting, which is both wrong and much less interesting --
+--      the deflection is what carries the ball into the 5 pin behind.
+local BALL_FRICTION, BALL_REST, BALL_ROLL = 0.18, 0.05, 0.004
+
+-- Maple on maple. Friction moderate (pins skid across a waxed deck),
+-- restitution high enough that a hit is passed along rather than swallowed.
+local PIN_FRICTION,  PIN_REST            = 0.22, 0.55
+
+-- Densities, chosen for a 4:1 ball-to-pin mass ratio -- real bowling's.
+-- The pin's own volume comes out of its six stacked hulls, so this is set
+-- against that rather than picked to look right.
+local PIN_DENSITY  = 0.9
+local BALL_DENSITY = 1.15
+
+-- How much a pin resists being spun and shoved. Small but not zero: a real
+-- pin does eventually stop, and zero damping leaves deadwood sliding around
+-- the deck for the whole settle beat.
+local PIN_LIN_DAMP, PIN_ANG_DAMP = 0.04, 0.06
 
 -- SIDE VIEW. The camera stands off the left rail, rides above the deck, and
 -- looks square across the lane and down at it, so a throw travels
@@ -104,6 +137,36 @@ local CAM_FIT_SLACK  = 1.10        -- breathing room, see the fit in love.draw
 local MAX_PULL  = 300
 local MAX_SPEED = 1500
 local MAX_SPIN  = 3.2               -- how much curve a full sideways drag adds
+
+-- ── AIM ───────────────────────────────────────────────────────────────
+--
+-- DERIVED FROM THE LANE, not chosen. The ball travels 4080px from the foul
+-- line to the headpin, and the furthest its centre can usefully be off the
+-- centreline when it gets there is half the lane minus its own radius --
+-- past that it is in the gutter. That is an angle of 0.029 rad, 1.7
+-- degrees. A bowling lane is a very long, very narrow thing and the useful
+-- range of aim on one is genuinely tiny.
+--
+-- THE CLAMP WAS 0.28 RAD -- 9.5 times too permissive, 16 degrees, which
+-- puts the ball 1180px sideways by the time it reaches the pins on a lane
+-- whose half-width is 172. It is why every "aimed" shot was really a gutter
+-- ball that clipped the corner pin on its way past, and why pin action
+-- looked broken when the ball was simply never reaching the rack.
+-- FULL SWEEP REACHES THE GUTTER, by design. The first correction clamped
+-- at the last line the ball can hold on the boards -- half the lane minus
+-- its radius, +-120px -- but the rack itself spans +-144, so the entire
+-- aim range landed inside the pins and EVERY shot struck. A game where no
+-- line can miss is not easier, it is not a game.
+--
+-- So the clamp is the gutter's own centre: at full sweep the ball leaves
+-- the boards, exactly as a real bad line does. Everything between is a
+-- real choice, and the pocket is a target you can miss on either side.
+local AIM_TRAVEL  = PIN_ROW_Z - 120                 -- foul line to headpin
+local MAX_AIM     = math.atan((LANE_W / 2 + GUTTER_W * 0.5) / AIM_TRAVEL)
+-- How much finger travel spends the whole aim range. A deliberate, gentle
+-- sweep -- this is a game for someone who should not have to be precise,
+-- and the whole span is only 1.7 degrees.
+local AIM_DRAG_PX = 260
 
 -- ── state ─────────────────────────────────────────────────────────────
 
@@ -288,28 +351,28 @@ local function newPin(x, z)
   -- base: a flat-bottomed cylinder, barely tapered. Wide enough to STAND
   -- on -- the first pass ran it at 0.62 and the pins came to a point like
   -- skittles, which both looks wrong and makes them tip too easily.
-  local s1 = dbg.cylinder(b, H * 0.10, rBase, -H * 0.45, PIN_SEG, 0.9,
+  local s1 = dbg.cylinder(b, H * 0.10, rBase, -H * 0.45, PIN_SEG, PIN_DENSITY,
                           "pin", vr(-0.45, 0.10))
   -- the flare from base up into the belly
-  local s2 = dbg.cone(b, H * 0.20, rBase, rBelly, -H * 0.30, PIN_SEG, 0.9,
+  local s2 = dbg.cone(b, H * 0.20, rBase, rBelly, -H * 0.30, PIN_SEG, PIN_DENSITY,
                       "pin", vr(-0.30, 0.20))
   -- belly: the widest part, nearly straight
-  local s3 = dbg.cone(b, H * 0.16, rBelly, rBelly * 0.96, -H * 0.12, PIN_SEG, 0.9,
+  local s3 = dbg.cone(b, H * 0.16, rBelly, rBelly * 0.96, -H * 0.12, PIN_SEG, PIN_DENSITY,
                       "pin", vr(-0.12, 0.16))
   -- neck: the waist, tapering hard
-  local s4 = dbg.cone(b, H * 0.28, rBelly * 0.96, rNeck, H * 0.10, PIN_SEG, 0.9,
+  local s4 = dbg.cone(b, H * 0.28, rBelly * 0.96, rNeck, H * 0.10, PIN_SEG, PIN_DENSITY,
                       "pin", vr(0.10, 0.28))
   -- head: flares back out, then a rounded cap rather than a point
-  local s5 = dbg.cone(b, H * 0.16, rNeck, rHead, H * 0.32, PIN_SEG, 0.9,
+  local s5 = dbg.cone(b, H * 0.16, rNeck, rHead, H * 0.32, PIN_SEG, PIN_DENSITY,
                       "pin", vr(0.32, 0.16))
-  local s6 = dbg.cone(b, H * 0.10, rHead, rHead * 0.62, H * 0.45, PIN_SEG, 0.9,
+  local s6 = dbg.cone(b, H * 0.10, rHead, rHead * 0.62, H * 0.45, PIN_SEG, PIN_DENSITY,
                       "pin", vr(0.45, 0.10))
 
   for _, s in ipairs({ s1, s2, s3, s4, s5, s6 }) do
     b3.shape_set_material(s, PIN_FRICTION, PIN_REST)
   end
-  b3.body_set_linear_damping(b, 0.6)
-  b3.body_set_angular_damping(b, 0.7)
+  b3.body_set_linear_damping(b, PIN_LIN_DAMP)
+  b3.body_set_angular_damping(b, PIN_ANG_DAMP)
   return { body = b, x = x, z = z, down = false }
 end
 
@@ -500,7 +563,7 @@ end
 local function placeBall()
   if ballBody then b3.body_destroy(ballBody) end
   ballBody = b3.body_new(world, 0, BALL_R, 120, 2)
-  local s = dbg.sphere(ballBody, BALL_R, 2.2, "ball")
+  local s = dbg.sphere(ballBody, BALL_R, BALL_DENSITY, "ball")
   b3.shape_set_material(s, BALL_FRICTION, BALL_REST, BALL_ROLL)
   b3.body_set_linear_damping(ballBody, 0.08)
   b3.body_set_angular_damping(ballBody, 0.12)
@@ -746,8 +809,13 @@ function love.update(dt)
 
   if state == "aim" then
     if padUsed then
-      if love.pad.isDown("left")  then aimAngle = aimAngle - dt * 0.5 end
-      if love.pad.isDown("right") then aimAngle = aimAngle + dt * 0.5 end
+      -- The pad sweeps the same range as a drag, in about two seconds, and
+      -- is CLAMPED to it. It ran at 0.5 rad/sec unclamped, which crosses
+      -- the entire useful aim of a bowling lane in sixty milliseconds and
+      -- then keeps going until the ball is thrown at the side wall.
+      local rate = MAX_AIM / 1.0
+      if love.pad.isDown("left")  then aimAngle = math.max(-MAX_AIM, aimAngle - dt * rate) end
+      if love.pad.isDown("right") then aimAngle = math.min( MAX_AIM, aimAngle + dt * rate) end
       if love.pad.isDown("down")  then aimPull = math.min(MAX_PULL, aimPull + dt * 300) end
       if love.pad.isDown("up")    then aimPull = math.max(0, aimPull - dt * 300) end
       if edges.a or edges.b then throw() end
@@ -765,7 +833,10 @@ function love.update(dt)
       local d = math.sqrt(dx * dx + dy * dy)
       if d > 10 then
         aimPull  = math.min(MAX_PULL, math.max(0, dy))
-        aimAngle = math.max(-0.28, math.min(0.28, dx / 900))
+        -- Aim maps the sideways drag across the lane's OWN useful range,
+        -- so a full sweep reaches the gutter and no further. See MAX_AIM.
+        local f = math.max(-1, math.min(1, dx / AIM_DRAG_PX))
+        aimAngle = f * MAX_AIM
         aimSpin  = math.max(-1, math.min(1, dx / 320))
       else
         aimPull = 0
@@ -777,7 +848,14 @@ function love.update(dt)
   end
 
   if state == "rolling" or state == "settling" then
-    b3.world_step(world, 1 / 60, 4)
+    -- SUBSTEPS 4 -> 8. Ten pins in a tight rack is a dense contact island:
+    -- a pin is touching the deck and two or three neighbours at once, and
+    -- the whole rack has to resolve as one system. Four substeps leaves
+    -- that under-solved, which shows up as impacts that get swallowed at
+    -- the moment several pins are in contact -- exactly when the chain
+    -- reaction should be happening. Eight is cheap here: this is ten
+    -- dynamic bodies, not a thousand.
+    b3.world_step(world, 1 / 60, 8)
 
     local vx, vy, vz = b3.body_velocity(ballBody)
     local speed = math.sqrt(vx * vx + vy * vy + vz * vz)
