@@ -298,15 +298,22 @@ function M.makeTextures()
     local l = 0.965 + (wear - 0.5) * 0.055
     local r, g, b = 0.98 * l, 0.97 * l, 0.94 * l
 
-    -- The two red stripes around the neck. Real pins carry them just below
-    -- the head, on the taper.
+    -- THE TWO RED STRIPES GO ON THE NECK, NOT THE WAIST.
+    --
+    -- The pin's sections, in v: base 0.00-0.10, flare 0.10-0.30, belly
+    -- 0.30-0.46, NECK 0.46-0.74, head flare 0.74-0.90, cap 0.90-1.00. The
+    -- neck is the narrow waisted taper between the belly and the head, and
+    -- a real pin carries its stripes at the TOP of it -- right under where
+    -- the head flares back out, which on a USBC pin is about 10 inches up
+    -- a 15 inch pin.
+    --
+    -- The first pass put them at 0.700/0.775, which straddles the neck/head
+    -- join and reads as a band around the widest part of the shoulder --
+    -- visibly too low, and the wrong silhouette entirely.
     local function stripe(c, halfWidth)
-      if math.abs(v - c) < halfWidth then
-        return true
-      end
-      return false
+      return math.abs(v - c) < halfWidth
     end
-    if stripe(0.700, 0.026) or stripe(0.775, 0.026) then
+    if stripe(0.640, 0.024) or stripe(0.706, 0.024) then
       r, g, b = 0.82 * l, 0.13 * l, 0.16 * l
     end
 

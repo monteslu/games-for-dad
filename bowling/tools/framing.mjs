@@ -59,34 +59,60 @@ async function notify(method) {
 
 const call = (name, args) => rpc('tools/call', { name, arguments: args });
 
-// Measure the bounding box of the BALL AND PINS -- the magenta, dynamic
-// bodies.
+// Measure the bounding box of the BALL AND PINS.
 //
-// Deliberately NOT the green static geometry. The lane runs the length of
-// the shot and the back wall behind the pit is seen nearly edge-on, so both
+// Deliberately NOT the static geometry. The lane runs the length of the
+// shot and the back wall behind the pit is seen nearly edge-on, so both
 // touch the frame edge at any camera distance; asserting on them measures
 // the backdrop rather than the composition, and no amount of pulling the
 // camera back can satisfy it. What has to stay in frame is the action.
+//
+// THIS USED TO MATCH DEBUG MAGENTA, and when the pins and ball were
+// textured it silently stopped finding the pins -- it kept PASSING while
+// measuring the ball alone, which is the worst way for a test to break. It
+// now matches the real art, and asserts that it found BOTH, so the same
+// failure cannot recur quietly.
+//
+//   pins: near-white lacquer, low saturation, bright
+//   ball: dark purple marbling -- blue clearly above green, and dim
 function extent(path) {
   const py = `
 from PIL import Image
 im = Image.open(${JSON.stringify(path)}).convert('RGB')
 W, H = im.size
 px = im.load()
-x0, x1, y0, y1 = W, -1, H, -1
+
+def box():
+    return [W, -1, H, -1]
+
+def add(bb, x, y):
+    if x < bb[0]: bb[0] = x
+    if x > bb[1]: bb[1] = x
+    if y < bb[2]: bb[2] = y
+    if y > bb[3]: bb[3] = y
+
+pins, ball = box(), box()
 for y in range(H):
     for x in range(W):
         r, g, b = px[x, y]
-        if r > 140 and b > 110 and g < 110:
-            if x < x0: x0 = x
-            if x > x1: x1 = x
-            if y < y0: y0 = y
-            if y > y1: y1 = y
-print(W, H, x0, x1, y0, y1)
+        mx, mn = max(r, g, b), min(r, g, b)
+        # pin lacquer: bright and nearly neutral
+        if mn > 150 and (mx - mn) < 60:
+            add(pins, x, y)
+        # ball resin: dark, violet, blue ahead of green
+        elif 30 < mx < 165 and b > g + 18 and r > g + 6:
+            add(ball, x, y)
+
+both = box()
+for bb in (pins, ball):
+    if bb[1] >= 0:
+        add(both, bb[0], bb[2]); add(both, bb[1], bb[3])
+print(W, H, both[0], both[1], both[2], both[3],
+      1 if pins[1] >= 0 else 0, 1 if ball[1] >= 0 else 0)
 `;
   const out = execFileSync('python3', ['-c', py], { encoding: 'utf8' }).trim();
-  const [W, H, x0, x1, y0, y1] = out.split(/\s+/).map(Number);
-  return { W, H, x0, x1, y0, y1 };
+  const [W, H, x0, x1, y0, y1, sawPins, sawBall] = out.split(/\s+/).map(Number);
+  return { W, H, x0, x1, y0, y1, sawPins: !!sawPins, sawBall: !!sawBall };
 }
 
 async function shoot(label) {
@@ -106,7 +132,20 @@ async function shoot(label) {
 const failures = [];
 function check(m) {
   console.log(`  ${m.label}: margins L=${m.margins.left} R=${m.margins.right} ` +
-              `T=${m.margins.top} B=${m.margins.bottom}`);
+              `T=${m.margins.top} B=${m.margins.bottom}` +
+              `  [pins ${m.extent.sawPins ? 'y' : 'N'} ball ${m.extent.sawBall ? 'y' : 'N'}]`);
+
+  // BOTH have to be found, or the margins are measuring the wrong thing.
+  // This is not paranoia: the previous detector matched debug magenta, and
+  // when the art landed it went on passing while silently measuring the
+  // ball alone -- a green test that had stopped testing the pins.
+  if (!m.extent.sawPins) {
+    failures.push(`${m.label}: found NO pins -- detector no longer matches the art`);
+  }
+  if (!m.extent.sawBall) {
+    failures.push(`${m.label}: found NO ball -- detector no longer matches the art`);
+  }
+
   // Only left/right matter: the lane fills the frame vertically by design,
   // and the HUD legitimately overlaps the bottom.
   for (const side of ['left', 'right']) {

@@ -106,6 +106,13 @@ local t = 0
 local rollingSound, hitRack, inGutter = false, false, false
 local prevStanding = 10
 
+-- FORWARD DECLARATION. endOfBall fires the celebration, and it is defined
+-- well above the effects that draw it. A `local function` declared later
+-- is a different upvalue entirely, so without this the strike handler
+-- would call nil -- and only on a strike, which is the least convenient
+-- moment to find out.
+local burstSparks
+
 local function setMsg(s, secs) msg, msgT = s, secs or 2.2 end
 
 -- ── camera ────────────────────────────────────────────────────────────
@@ -627,10 +634,12 @@ local function endOfBall()
   if knockedThisBall == 10 and ballNo == 1 then
     setMsg("STRIKE", 2.4)
     sounds.play("strike", 0.85)
+    burstSparks(true)
   elseif down == 10 then
     local strike = ballNo == 1
     setMsg(strike and "STRIKE" or "SPARE", 2.2)
     sounds.play(strike and "strike" or "spare", 0.8)
+    burstSparks(strike)
   end
 
   if tenth then
@@ -789,6 +798,135 @@ end
 
 -- ── drawing ───────────────────────────────────────────────────────────
 
+-- ── effects ───────────────────────────────────────────────────────────
+--
+-- These are 2D, drawn over the finished 3D pass and projected through the
+-- same toScreen the aim line uses, so they land exactly where the geometry
+-- is. That is a deliberate choice over more 3D bodies: a contact shadow is
+-- not a solid, and adding collision geometry for something that is
+-- conceptually a smudge of darkness would be the minigolf mistake in a new
+-- costume.
+
+-- THE CONTACT SHADOW. The single biggest thing separating a ball that sits
+-- ON the lane from one that hovers above it -- the eye reads contact from
+-- the shadow, not from the gap.
+--
+-- Drawn as a flattened ellipse at the ball's own x/z but at the lane's
+-- surface, so it stays put under the ball however the camera moves. It
+-- tightens and darkens as the ball nears the boards, which is what sells
+-- the ball actually resting on them.
+local function drawContactShadow()
+  if not ballBody then return end
+  local bx, by, bz = b3.body_position(ballBody)
+  -- Nothing to catch a shadow once the ball has left the boards.
+  if math.abs(bx) > LANE_W / 2 + 4 or by < -40 then return end
+
+  local sx, sy = toScreen(bx, LANE_Y + 2, bz)
+  if sx < -900 then return end
+  -- how far above the lane the ball is riding, 0 at rest
+  local lift = math.max(0, (by - BALL_R) / (BALL_R * 3))
+  local tight = 1 - math.min(0.6, lift)
+
+  -- Radius in SCREEN pixels, from the ball's own projected size, so it
+  -- scales with the camera instead of being a fixed blob.
+  local ex, _ = toScreen(bx + BALL_R, LANE_Y + 2, bz)
+  local rad = math.max(4, math.abs(ex - sx))
+
+  local g = love.graphics
+  -- A few stacked ellipses instead of one: a soft edge without needing a
+  -- texture or a blend mode the 2D path may not have.
+  for i = 3, 1, -1 do
+    local k = i / 3
+    g.setColor(0, 0, 0, 0.30 * tight * (1.15 - k * 0.55))
+    -- squashed hard in y: the lane is seen at 45 degrees, so a circle on
+    -- it projects to a shallow ellipse
+    g.ellipse("fill", sx, sy, rad * k * 1.05 * tight, rad * k * 0.40 * tight)
+  end
+  g.setColor(1, 1, 1, 1)
+end
+
+-- THE BALL'S SPECULAR. A polished ball catches the house lights, and that
+-- highlight is what says "polished" rather than "matte plastic". Drawn
+-- offset toward the key light, and it does NOT rotate with the ball --
+-- a highlight is a reflection of a fixed light, so it stays put while the
+-- marbling turns underneath it, which is exactly what reads as gloss.
+local function drawBallSheen()
+  if not ballBody then return end
+  local bx, by, bz = b3.body_position(ballBody)
+  local sx, sy = toScreen(bx, by, bz)
+  if sx < -900 then return end
+  local ex, _ = toScreen(bx + BALL_R, by, bz)
+  local rad = math.abs(ex - sx)
+  if rad < 3 then return end
+
+  local g = love.graphics
+  -- up and to the left, where the key light is
+  local hx, hy = sx - rad * 0.34, sy - rad * 0.40
+  g.setColor(1, 0.98, 0.94, 0.30)
+  g.circle("fill", hx, hy, rad * 0.26)
+  g.setColor(1, 1, 1, 0.42)
+  g.circle("fill", hx, hy, rad * 0.13)
+  g.setColor(1, 1, 1, 1)
+end
+
+-- THE CELEBRATION. A strike is the whole point of the game and it used to
+-- pass with a word on screen. A slow warm shower of sparks over the deck
+-- gives it a moment.
+--
+-- SLOW AND WARM ON PURPOSE. This game is for someone who should never feel
+-- hurried or startled: no flash, no shake, no strobe. The sparks drift up
+-- and fade, and they never obscure the pins.
+local sparks = {}
+
+-- ASSIGNS the forward-declared local above. Not `local function` (that
+-- would shadow it with a new local) and not a bare `function` (that would
+-- make a global and leave the declared local nil).
+burstSparks = function(big)
+  local n = big and 34 or 16
+  local px, py = toScreen(0, PIN_H * 0.6, PIN_ROW_Z + PIN_SPACING)
+  if px < -900 then return end
+  for i = 1, n do
+    local a = (i / n) * math.pi * 2
+    local sp = (big and 120 or 80) * (0.45 + ((i * 37) % 100) / 100 * 0.8)
+    sparks[#sparks + 1] = {
+      x = px + math.cos(a) * 12,
+      y = py + math.sin(a) * 12,
+      vx = math.cos(a) * sp,
+      vy = math.sin(a) * sp - (big and 90 or 60),
+      life = (big and 1.5 or 1.1) * (0.7 + ((i * 53) % 100) / 100 * 0.6),
+      age = 0,
+      r = (big and 5 or 4) + ((i * 29) % 30) / 10,
+    }
+  end
+end
+
+local function updateSparks(dt)
+  for i = #sparks, 1, -1 do
+    local s = sparks[i]
+    s.age = s.age + dt
+    if s.age >= s.life then
+      table.remove(sparks, i)
+    else
+      s.x = s.x + s.vx * dt
+      s.y = s.y + s.vy * dt
+      s.vy = s.vy + 150 * dt        -- gentle gravity, so they arc over
+      s.vx = s.vx * (1 - dt * 0.9)  -- and slow down
+    end
+  end
+end
+
+local function drawSparkle()
+  if #sparks == 0 then return end
+  local g = love.graphics
+  for _, s in ipairs(sparks) do
+    local k = 1 - s.age / s.life
+    -- warm gold, fading to a deeper amber as it dies
+    g.setColor(1, 0.80 + k * 0.18, 0.35 + k * 0.30, k * 0.85)
+    g.circle("fill", s.x, s.y, s.r * (0.35 + k * 0.75))
+  end
+  g.setColor(1, 1, 1, 1)
+end
+
 local function drawAim()
   if state ~= "aim" or aimPull < 6 then return end
   local g = love.graphics
@@ -926,6 +1064,16 @@ function love.draw()
   dream:present(cam)
 
   love.graphics.setDepthMode()
+  -- Shadow first, under everything; then the sheen on the ball; then the
+  -- aim line, which must sit on top of both.
+  drawContactShadow()
+  drawBallSheen()
   drawAim()
+  -- Sparks are advanced HERE rather than in love.update purely because the
+  -- effects live below it in this file and a local declared later is not
+  -- in scope above. They are decoration with no bearing on the simulation,
+  -- so stepping them on the draw clock costs nothing.
+  updateSparks(love.timer and love.timer.getDelta and love.timer.getDelta() or 1 / 60)
+  drawSparkle()
   drawHUD()
 end
