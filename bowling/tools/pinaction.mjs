@@ -37,11 +37,12 @@ async function readField(name) {
 async function readState() {
   const score = await readField('score');
   let aux = await readField('aux');
+  const marker = (aux % 201) / 100 - 1;   aux = Math.floor(aux / 201);
   const last = aux % 11;   aux = Math.floor(aux / 11);
   const rolls = aux % 22;  aux = Math.floor(aux / 22);
   const code = aux % 8;    aux = Math.floor(aux / 8);
-  const ball = aux % 4;    aux = Math.floor(aux / 4);
-  return { score, frame: aux, ball, code, rolls, last };
+  const ball = aux % 6;    aux = Math.floor(aux / 6);
+  return { score, frame: aux, ball, code, rolls, last, marker };
 }
 
 async function throwBall(dx, power) {
@@ -82,17 +83,50 @@ const AIMS = [
   { dx: -120, label: 'edge left' },
 ];
 
-console.log('pin action: how many fall per hit\n');
+// THIS TEST IS ABOUT AIM AND PIN ACTION, NOT SPIN.
+//
+// The spin meter sweeps until it is tapped, so a test that ignores it
+// throws with WHATEVER SPIN THE MARKER HAPPENED TO BE AT -- and a
+// full-sweep aim plus a full hook compound into the gutter, which reads as
+// "pin action broke" when nothing of the sort has happened.
+//
+// So: stop the marker in the dead zone, giving a straight ball every time.
+// The cart publishes the marker's position in aux, so this POLLS it and
+// taps when the marker is central. Reading the real value beats assuming a
+// phase -- a fixed frame count would drift the moment SPIN_SWEEP changed,
+// and would do it silently.
+const SPIN_Y = 906, SPIN_H = 96;
+async function setSpinStraight() {
+  for (let i = 0; i < 400; i++) {
+    const pos = (await readState()).marker;
+    if (Math.abs(pos) < 0.10) {                    // inside the dead zone
+      await call('input', { op: 'pointer', id: 1, x: 960, y: SPIN_Y + SPIN_H / 2, left: true, active: true });
+      await step(3);
+      await call('input', { op: 'pointer', id: 1, x: 960, y: SPIN_Y + SPIN_H / 2, left: false, active: false });
+      await step(4);
+      return;
+    }
+    await step(2);
+  }
+  throw new Error('spin marker never reached the dead zone');
+}
+
+console.log('pin action: how many fall per hit  (spin held straight)\n');
 console.log('  aim            knocked');
 const results = [];
 for (const a of AIMS) {
+  await setSpinStraight();
   await throwBall(a.dx, 1.0);
   const after = await settle();
   console.log(`  ${a.label.padEnd(14)} ${String(after.last).padStart(2)}`);
   results.push({ ...a, knocked: after.last });
-  // second ball of the frame clears the rack; throw it away to reset
+  // Second ball of the frame: throw it away so the next aim starts on a
+  // full rack. It needs its spin stopped too -- an unstopped meter leaves
+  // a full hook on a soft throw, which curls into the gutter and then
+  // never settles inside the budget.
   if (after.code !== 5 && after.ball === 2) {
-    await throwBall(0, 0.3);
+    await setSpinStraight();
+    await throwBall(0, 0.6);
     await settle();
   }
 }

@@ -136,7 +136,97 @@ local CAM_FIT_SLACK  = 1.10        -- breathing room, see the fit in love.draw
 -- Throwing. Pull back from the ball like every other game in the family.
 local MAX_PULL  = 300
 local MAX_SPEED = 1500
-local MAX_SPIN  = 3.2               -- how much curve a full sideways drag adds
+-- ── THE HOOK ──────────────────────────────────────────────────────────
+--
+-- A real hook is not the ball spinning like a top. It is SIDE ROLL: the
+-- ball leaves the hand rotating about a tilted axis, skids down the oiled
+-- front of the lane barely gripping, and then -- as it reaches the dry
+-- back end and the side rotation bites -- friction turns that rotation
+-- into a sideways force and the ball arcs into the pocket. The curve
+-- happens LATE, which is exactly why a hook is worth having: it comes in
+-- at an angle no straight ball can.
+--
+-- THE OLD CODE SET ANGULAR VELOCITY ABOUT Y, which is a ball spinning
+-- about the vertical -- a top. That produces no meaningful lateral force
+-- at all, so the "hook" did nothing. Meanwhile drawAim drew a 21-board
+-- curve, so the preview promised an arc the physics never delivered.
+--
+-- Modelled here as a lateral force proportional to side rotation, ramped
+-- in over the length of the lane so the ball goes straight early and turns
+-- late. Box3D gives us b3.body_apply_force, so this is real force on a
+-- real body rather than the position of the ball being written directly.
+local MAX_SPIN     = 3.2            -- rad/s of side rotation at a full sweep
+-- Peak lateral force, as a multiple of the ball's own weight.
+--
+-- SOLVED, not guessed. Over the bite phase (1836px at 1500px/s, so 1.22s)
+-- with the ramp giving a mean acceleration of HOOK_FORCE*g/2, the lateral
+-- displacement is 0.5*a*t^2. A full hook should move the ball about ten
+-- BOARDS -- a strong but ordinary league hook -- and a board is 344/39 =
+-- 8.8px here, so ten boards is 88px. That puts HOOK_FORCE at 0.27.
+--
+-- The first value, 0.62, worked out to 23 boards: measured on screen, a
+-- dead-centre aim with full spin hooked clean off the edge of the lane
+-- into the gutter.
+local HOOK_FORCE   = 0.27
+-- Where down the lane the hook starts to bite, as a fraction of the run.
+-- Real oil patterns run about 40ft of a 60ft lane.
+local HOOK_START   = 0.55
+
+-- ── THE SPIN DIAL ─────────────────────────────────────────────────────
+--
+-- Spin gets its OWN control, because a bowler's line and a bowler's hook
+-- are genuinely independent: you pick which board to roll over, and
+-- separately your grip and release decide how much the ball turns over.
+-- Welding them to one axis, which is what this used to do, is not a
+-- simplification -- it removes a real choice and makes aiming punish you.
+--
+-- A ROW OF STOPS, NOT A TIMING BAR. A moving marker that has to be
+-- stopped at the right instant is a reaction test, and this family's rule
+-- is that nothing moves unless he moves it. These stops sit still, keep
+-- their setting between balls, and can be ignored entirely: the middle is
+-- no spin, and a player who never touches them gets a straight ball
+-- forever and a perfectly good game.
+--
+--   << <  |  > >>      hard left, left, straight, right, hard right
+--
+-- A SWEEPING MARKER, TAPPED. The marker travels left-to-right and back
+-- along the meter and a single tap stops it: where it stops is the spin.
+-- Centre is straight, the ends are a full hook either way.
+--
+-- This is the third click of the classic golf meter (Links, Hot Shots
+-- Golf), and it is the right shape for this player. The dexterity it asks
+-- for is RHYTHM -- watch a thing move, press when it is where you want it
+-- -- which is a judgement an old hand keeps long after fine motor control
+-- for small targets goes. There is nothing to drag, nothing small to hit,
+-- and one input does the whole job.
+--
+-- It is also slow on purpose. A full sweep takes SPIN_SWEEP seconds, which
+-- is unhurried enough to watch the marker approach the middle and press,
+-- and the middle is WIDE (see SPIN_DEAD): a tap anywhere near the centre
+-- is a straight ball, so someone who just taps without watching gets the
+-- simple game and never knows the meter was doing anything.
+local SPIN_SWEEP  = 2.6            -- seconds for one end-to-end pass
+local SPIN_DEAD   = 0.16           -- fraction of the bar that reads as straight
+local spinPos     = 0              -- -1..1, where the marker is right now
+local spinDir     = 1              -- which way it is travelling
+local spinSet     = false          -- has it been stopped for this ball?
+local aimSpinVal  = 0              -- the spin the stop chose
+
+-- Where the dial sits. Big and low, well clear of the throw drag.
+--
+-- SIZED TO 24 MILLIMETRES PER STOP, the touch-target floor that the Xbox
+-- Accessibility Guidelines (107) and the Game Accessibility Guidelines
+-- arrive at independently for tablets. On the 10-inch tablet this is
+-- played on -- 1920px across roughly 217mm -- 24mm is 212px, so five stops
+-- want about 1060px of the 1920.
+--
+-- The first pass used 128px stops: 14.5mm. Comfortably above what a phone
+-- app would use, and comfortably below what an eighty-five-year-old hand
+-- is entitled to. A floor is a floor, not a target.
+local SPIN_UI_W = 1080
+local SPIN_UI_X = (1920 - SPIN_UI_W) / 2
+local SPIN_UI_Y = 906
+local SPIN_UI_H = 96
 
 -- ── AIM ───────────────────────────────────────────────────────────────
 --
@@ -177,6 +267,11 @@ local rolls = {}                    -- every roll's pin count, in order
 local state = "aim"                 -- aim | rolling | settling | between | done
 local settleT = 0
 local aimAngle, aimPull, aimSpin = 0, 0, 0
+-- The spin the ball was actually THROWN with, held for the whole roll.
+-- Separate from aimSpin, which is the aiming UI's live value and gets
+-- reset the moment the next ball is placed -- the hook needs to keep
+-- pulling long after that.
+local throwSpin = 0
 local dragFrom = nil
 local msg, msgT = nil, 0
 local standingAtFrameStart = 10
@@ -235,16 +330,26 @@ local function publishState()
   --   lastRoll  0..10   -> 11 values, low field
   --   rollCount 0..21   -> 22 values
   --   state     0..5    -> 8  (round up, room to spare)
-  --   ball      1..3
+  --   ball      1..4    -> 6  (see below)
   --   frame     1..10
+  --
+  -- BALL NEEDS SIX VALUES, NOT FOUR. The tenth frame increments ballNo
+  -- once more as it finishes, so a game that ends on the third fill ball
+  -- leaves ballNo at 4 -- and with only four values that carried into the
+  -- frame field and reported FRAME 11. The game was right; the packing
+  -- was too tight. Six leaves room and costs nothing.
   -- A strike is TEN, so lastRoll needs eleven values and cannot live in a
   -- single decimal digit -- packing it against 10 would make a strike read
   -- as zero with a phantom extra roll counted above it.
   local code = STATE_CODE[state] or 0
   local n = math.min(#rolls, 21)
   local last = math.min(rolls[#rolls] or 0, 10)
-  love.debugValue(1, ((frameNo * 4 + ballNo) * 8 + code) * 22 * 11
-                     + n * 11 + last)
+  -- The spin MARKER's position rides in the low field, 0..200 for -1..+1.
+  -- A harness that wants a straight ball has to know where the marker is;
+  -- guessing from a frame count would drift the moment SPIN_SWEEP changed.
+  local mk = math.floor((math.max(-1, math.min(1, spinPos)) + 1) * 100 + 0.5)
+  love.debugValue(1, (((frameNo * 6 + ballNo) * 8 + code) * 22 * 11
+                     + n * 11 + last) * 201 + mk)
 end
 
 -- ── camera ────────────────────────────────────────────────────────────
@@ -574,6 +679,10 @@ local function placeBall()
   -- baseline restarts from whatever is standing now (which is NOT ten on
   -- the second ball of a frame).
   hitRack, inGutter = false, false
+  -- The meter starts sweeping again for the next ball. Spin is a choice
+  -- made per throw, not a setting -- which is also what keeps the tenth
+  -- frame's fill balls from inheriting whatever the last one used.
+  spinSet, aimSpinVal = false, 0
   local standing = 0
   for _, p in ipairs(pins) do
     if not p.down then standing = standing + 1 end
@@ -658,7 +767,12 @@ local function throw()
   -- game and the reason a straight ball is not the only option.
   b3.body_set_velocity(ballBody, math.sin(aimAngle) * sp, 0,
                        math.cos(aimAngle) * sp)
-  b3.body_set_angular_velocity(ballBody, 0, aimSpin * MAX_SPIN, 0)
+  -- Side rotation about the DIRECTION OF TRAVEL (z), not about the
+  -- vertical. This is what a real release imparts, and it is what the
+  -- lateral hook force in love.update is the consequence of. Setting it
+  -- about y span the ball like a top and did nothing at all.
+  b3.body_set_angular_velocity(ballBody, 0, 0, -aimSpin * MAX_SPIN)
+  throwSpin = aimSpin
   state = "rolling"
   settleT = 0
   -- The roll runs under the whole shot. Pitched slightly by how hard it was
@@ -808,7 +922,45 @@ function love.update(dt)
   if msgT > 0 then msgT = msgT - dt; if msgT <= 0 then msg = nil end end
 
   if state == "aim" then
+    -- THE SPIN METER. The marker sweeps until it is stopped; once stopped
+    -- it stays put and its position is the spin for this ball.
+    if not spinSet then
+      spinPos = spinPos + spinDir * (dt / SPIN_SWEEP) * 2
+      if spinPos >= 1 then spinPos = 1; spinDir = -1
+      elseif spinPos <= -1 then spinPos = -1; spinDir = 1 end
+    end
+
+    -- A WIDE DEAD ZONE in the middle. Anywhere near centre is a straight
+    -- ball, so a player who taps without watching gets the simple game --
+    -- the meter only rewards attention, it never punishes inattention.
+    local s = spinPos
+    if math.abs(s) < SPIN_DEAD then
+      s = 0
+    else
+      s = (math.abs(s) - SPIN_DEAD) / (1 - SPIN_DEAD) * (s < 0 and -1 or 1)
+    end
+    aimSpin = spinSet and aimSpinVal or s
+
+    -- ONE TAP STOPS THE MARKER. Anywhere on the meter's band, which is a
+    -- 1080x176 target -- there is nothing to hit precisely, only a moment
+    -- to choose. A gamepad press does the same thing, so the timing is
+    -- reachable without a touchscreen.
+    if not spinSet then
+      local tapped = (click and click.y > SPIN_UI_Y - 60
+                            and click.y < SPIN_UI_Y + SPIN_UI_H + 60)
+      if tapped or edges.x then
+        spinSet = true
+        aimSpinVal = s
+        sounds.play("clack", 0.4, 1.25)
+        if tapped then click = nil end     -- consumed; not also a throw
+      end
+    end
+
     if padUsed then
+      -- X and Y step the spin dial on a pad, so the whole game is
+      -- reachable without a touchscreen.
+      -- (X stops the spin meter; handled above with the touch tap so both
+      -- paths do exactly the same thing.)
       -- The pad sweeps the same range as a drag, in about two seconds, and
       -- is CLAMPED to it. It ran at 0.5 rad/sec unclamped, which crosses
       -- the entire useful aim of a bowling lane in sixty milliseconds and
@@ -819,8 +971,9 @@ function love.update(dt)
       if love.pad.isDown("down")  then aimPull = math.min(MAX_PULL, aimPull + dt * 300) end
       if love.pad.isDown("up")    then aimPull = math.max(0, aimPull - dt * 300) end
       if edges.a or edges.b then throw() end
-      -- Y toggles the physics view, which here is a plain-graphics toggle
-      if edges.y then dbg.toggle() end
+      -- (Y used to toggle the physics view. The default renderer IS the
+      -- graphics in this game, so that toggle only ever blanked the
+      -- screen; the button is better spent on the spin dial.)
     end
 
     -- Touch: press, drag BACK to load, release to throw. Sideways drag is
@@ -833,11 +986,18 @@ function love.update(dt)
       local d = math.sqrt(dx * dx + dy * dy)
       if d > 10 then
         aimPull  = math.min(MAX_PULL, math.max(0, dy))
-        -- Aim maps the sideways drag across the lane's OWN useful range,
-        -- so a full sweep reaches the gutter and no further. See MAX_AIM.
+        -- SIDEWAYS IS AIM ONLY. It used to be aim AND spin at once, off
+        -- the same dx, which meant he could not aim right without also
+        -- hooking right -- two of the three things a bowler controls
+        -- welded to one axis. Worse, spin saturated further out than aim
+        -- did, so a full hook was only reachable from a line already in
+        -- the gutter, and the measured result was that every shot got
+        -- worse the further he aimed (9, 7, 6, 1 pins).
+        --
+        -- Spin now has its own control, set before the throw. See
+        -- SPIN_STEP and the spin dial.
         local f = math.max(-1, math.min(1, dx / AIM_DRAG_PX))
         aimAngle = f * MAX_AIM
-        aimSpin  = math.max(-1, math.min(1, dx / 320))
       else
         aimPull = 0
       end
@@ -855,6 +1015,26 @@ function love.update(dt)
     -- the moment several pins are in contact -- exactly when the chain
     -- reaction should be happening. Eight is cheap here: this is ten
     -- dynamic bodies, not a thousand.
+    -- THE HOOK BITES. Applied before the step, every step, while the ball
+    -- is still on the boards and still moving down the lane. The ramp is
+    -- what makes the curve read as a hook rather than as a banana: the
+    -- ball tracks straight through the oil and turns over the back end.
+    if throwSpin ~= 0 and ballBody then
+      local hx, hy, hz = b3.body_position(ballBody)
+      local f = (hz - 120) / (PIN_ROW_Z - 120)
+      if f > HOOK_START and f < 1.15 and hy > -40 then
+        -- 0 at the start of the bite, 1 by the time it reaches the pins
+        local bite = math.min(1, (f - HOOK_START) / (1 - HOOK_START))
+        local mass = b3.body_mass(ballBody)
+        -- NEGATED: a ">>" (right) setting has to send the ball right. The
+        -- first pass hooked a right-spin ball to the LEFT, straight off
+        -- the edge of the lane, because the sign was never checked against
+        -- the screen.
+        local force = -throwSpin * HOOK_FORCE * mass * math.abs(GRAVITY) * bite
+        b3.body_apply_force(ballBody, force, 0, 0)
+      end
+    end
+
     b3.world_step(world, 1 / 60, 8)
 
     local vx, vy, vz = b3.body_velocity(ballBody)
@@ -1169,6 +1349,46 @@ local function drawHUD()
     end
   end
 
+  -- THE SPIN DIAL. Only while aiming -- it is a choice about the next
+  -- throw, and leaving it on screen during the roll implies it can still
+  -- be changed.
+  if state == "aim" then
+    local X, Y, W, H = SPIN_UI_X, SPIN_UI_Y, SPIN_UI_W, SPIN_UI_H
+    g.setFont(ui.font(theme.fontSmall - 2))
+    g.setColor(theme.quiet)
+    g.printf(spinSet and "SPIN SET" or "TAP TO SET SPIN",
+             X, Y - 46, W, "center")
+
+    -- the track
+    g.setColor(1, 1, 1, 0.10)
+    g.rectangle("fill", X, Y, W, H)
+
+    -- THE DEAD ZONE, drawn. A visible band in the middle that says "this
+    -- much is straight" -- so the wide tolerance is a promise the player
+    -- can see rather than a kindness hidden in the code.
+    local dw = W * SPIN_DEAD
+    g.setColor(1, 1, 1, 0.13)
+    g.rectangle("fill", X + W / 2 - dw, Y, dw * 2, H)
+
+    -- hook direction, at the ends
+    g.setFont(ui.font(theme.fontMid))
+    g.setColor(1, 1, 1, 0.34)
+    g.printf("<<", X + 16, Y + H / 2 - 26, 120, "left")
+    g.printf(">>", X + W - 136, Y + H / 2 - 26, 120, "right")
+    g.setColor(1, 1, 1, 0.30)
+    g.printf("straight", X + W / 2 - 120, Y + H / 2 - 22, 240, "center")
+
+    -- THE MARKER. Fat, so it is easy to track: this is the thing his eye
+    -- follows and his hand answers.
+    local mx = X + (spinPos * 0.5 + 0.5) * W
+    g.setColor(spinSet and theme.gold or { 1, 1, 1 })
+    g.rectangle("fill", mx - 9, Y - 12, 18, H + 24)
+    if spinSet then
+      g.setColor(theme.gold)
+      g.rectangle("line", X, Y, W, H)
+    end
+  end
+
   if msg then
     -- BELOW the alley, not above it. The scoreboard owns the top of the
     -- frame now, and STRIKE at y=300 would land on the frame strip; the
@@ -1179,7 +1399,8 @@ local function drawHUD()
   elseif state == "aim" then
     g.setFont(ui.font(theme.fontSmall))
     g.setColor(theme.quiet)
-    g.printf("drag back to load, sideways to hook, let go to throw",
+    g.printf(spinSet and "drag back to load, sideways to aim, let go to throw"
+                      or "tap to set the spin, then drag back and let go to throw",
              0, 1044, 1920, "center")
   elseif state == "done" then
     g.setFont(ui.font(theme.fontMid))

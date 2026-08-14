@@ -18,7 +18,8 @@
 // read (see publishState in main.lua):
 //   score : running total
 //   aux   : frame, ball, state, rollCount and LAST ROLL, packed in mixed
-//           radix -- ((frame*4 + ball)*8 + state)*22*11 + rollCount*11 + last
+//           radix -- (((frame*6+ball)*8+state)*22*11 + rollCount*11 + last)*201
+//           + spinMarker, where spinMarker is 0..200 for -1..+1
 //
 // aux carries the last roll's pin count rather than the pins currently
 // standing, and that distinction is the whole reason this test works. The
@@ -79,11 +80,12 @@ async function readField(name) {
 async function readState() {
   const score = await readField('score');
   let aux = await readField('aux');
+  const marker = (aux % 201) / 100 - 1;   aux = Math.floor(aux / 201);
   const last = aux % 11;      aux = Math.floor(aux / 11);
   const rolls = aux % 22;     aux = Math.floor(aux / 22);
   const code = aux % 8;       aux = Math.floor(aux / 8);
-  const ball = aux % 4;       aux = Math.floor(aux / 4);
-  return { score, frame: aux, ball, state: STATE[code] ?? '?', rolls, last };
+  const ball = aux % 6;       aux = Math.floor(aux / 6);
+  return { score, frame: aux, ball, state: STATE[code] ?? '?', rolls, last, marker };
 }
 
 // ── the throw ─────────────────────────────────────────────────────────
