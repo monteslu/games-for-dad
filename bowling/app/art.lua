@@ -240,10 +240,33 @@ function M.makeTextures()
   local BS = 256
   -- The three holes sit in a small triangle on ONE face, the way a real
   -- drilled ball has them, rather than scattered over the sphere.
+  --
+  -- Sized and spaced in V-UNITS, where 1.0 is the pole-to-pole sweep --
+  -- 13.35in on a real 8.5in ball. That makes the numbers checkable against
+  -- something: the thumb-to-finger span works out around 3in and the finger
+  -- holes about 2.5in apart, which is a real drilling.
+  --
+  -- The holes themselves are about 1.1in, against a real 0.75-1.0in. A
+  -- deliberate overshoot: the ball is roughly 90px across on screen at the
+  -- setup framing, so a true-scale hole is barely three pixels and the
+  -- rotation it exists to show goes with it.
+  --
+  -- Centred near v=0.21, which is the latitude that faces the camera most
+  -- directly at this tilt. The ball rotates, so nothing faces the camera
+  -- ALWAYS -- but the drilling used to sit at v=0.33..0.45, well down the
+  -- side, where the surface turns away and even a perfectly round hole
+  -- projects as a thin crescent. Up here they read as holes far more of
+  -- the time.
+  --
+  -- The u spread grows as the holes move up: sin(latitude) compresses the
+  -- u axis toward the pole, so holding the same u offset would quietly
+  -- shrink the whole triangle. At these values the spans measure 2.65in
+  -- thumb-to-finger and 3.20in between the fingers on an 8.5in ball, which
+  -- is a real drilling.
   local HOLES = {
-    { u = 0.50, v = 0.34, r = 0.052 },
-    { u = 0.44, v = 0.46, r = 0.048 },
-    { u = 0.56, v = 0.46, r = 0.048 },
+    { u = 0.500, v = 0.120, r = 0.042 },   -- thumb
+    { u = 0.425, v = 0.300, r = 0.039 },   -- middle
+    { u = 0.575, v = 0.300, r = 0.039 },   -- ring
   }
   T.ball = image(BS, BS, function(x, y, w, h)
     local u, v = x / (w - 1), y / (h - 1)
@@ -258,15 +281,31 @@ function M.makeTextures()
     local l = 0.72 + sw * 0.42 + vein * 0.22
     local r, g, b = 0.30 * l, 0.31 * l, 0.35 * l
 
-    -- The holes. Distance is measured with the longitude wrapped and
-    -- SCALED BY sin(latitude): near the poles the u axis compresses, and
-    -- without that scaling a hole smears into a band around the pole.
+    -- THE HOLES ARE MEASURED IN ARC LENGTH, NOT IN UV.
+    --
+    -- A hole drilled in a ball is round ON THE BALL, and uv is not an
+    -- equal-area map -- so a circle in uv is an ellipse on the sphere, and
+    -- that is what put visible ovals on screen.
+    --
+    -- Two separate distortions, and the first pass only corrected one:
+    --
+    --   * u WRAPS THE WHOLE WAY ROUND (2*pi) while v only spans pole to
+    --     pole (pi). So one unit of u is worth TWICE one unit of v before
+    --     latitude enters into it at all. This factor of 2 was missing,
+    --     which made every hole exactly twice as wide as it was tall --
+    --     measured, not guessed.
+    --   * near the POLES the u axis compresses by sin(latitude), so
+    --     without that a hole smears into a band around the pole.
+    --
+    -- Both together: du is worth 2*sin(v*pi) times what dv is worth. Then
+    -- the radius is in v-units (fraction of the pole-to-pole sweep), which
+    -- is what makes a hole the same real size wherever it is drilled.
     local vt = v * math.pi
     local sp = math.max(0.15, math.sin(vt))
     for _, hl in ipairs(HOLES) do
       local du = math.abs(u - hl.u)
       if du > 0.5 then du = 1 - du end
-      du = du * sp
+      du = du * 2 * sp
       local dv = v - hl.v
       local d = math.sqrt(du * du + dv * dv)
       if d < hl.r then

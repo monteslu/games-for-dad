@@ -83,6 +83,64 @@ if (GUTTER_W < BALL_R * 1.5) {
   failures.push(`gutter ${GUTTER_W}px is narrow for a ${BALL_R * 2}px ball`);
 }
 
+// ── THE FINGER HOLES ARE ROUND ON THE BALL ────────────────────────────
+//
+// uv is not an equal-area map, so a circle in uv is an ELLIPSE on the
+// sphere. u wraps the whole way round (2*pi) while v only spans pole to
+// pole (pi), so one unit of u is worth twice one unit of v before latitude
+// even enters into it -- and near the poles sin(latitude) compresses u
+// further. art.lua corrects for both; this checks that it still does.
+//
+// The bug this catches shipped: the factor of 2 was missing, every hole
+// came out exactly twice as wide as it was tall, and they read as ovals
+// smeared into crescents.
+function holeRoundness() {
+  const art = readFileSync(new URL('../app/art.lua', import.meta.url).pathname, 'utf8');
+  // Match to the closing brace that sits ON ITS OWN LINE. A non-greedy
+  // `\}` stops at the first hole's own closing brace and finds exactly one
+  // entry -- which is how this test first ran.
+  const block = art.match(/local HOLES = \{([\s\S]*?)\n\s*\}/);
+  if (!block) throw new Error('could not find HOLES in art.lua');
+  const holes = [...block[1].matchAll(/u\s*=\s*([0-9.]+),\s*v\s*=\s*([0-9.]+),\s*r\s*=\s*([0-9.]+)/g)]
+    .map(m => ({ u: +m[1], v: +m[2], r: +m[3] }));
+  if (holes.length !== 3) throw new Error(`expected 3 holes, found ${holes.length}`);
+
+  // uv -> unit sphere, exactly as buildSphere does it
+  const p3 = (u, v) => {
+    const phi = v * Math.PI, th = u * 2 * Math.PI;
+    return [Math.sin(phi) * Math.cos(th), Math.cos(phi), Math.sin(phi) * Math.sin(th)];
+  };
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+
+  return holes.map(h => {
+    // art.lua's own test, replicated
+    const inside = (u, v) => {
+      const sp = Math.max(0.15, Math.sin(v * Math.PI));
+      let du = Math.abs(u - h.u);
+      if (du > 0.5) du = 1 - du;
+      return Math.hypot(du * 2 * sp, v - h.v) < h.r;
+    };
+    let u = h.u; while (inside(u, h.v) && u < h.u + 0.5) u += 0.0005;
+    let v = h.v; while (inside(h.u, v) && v < h.v + 0.5) v += 0.0005;
+    const wu = dist(p3(h.u, h.v), p3(u, h.v));
+    const wv = dist(p3(h.u, h.v), p3(h.u, v));
+    return { h, ratio: wu / wv, diaIn: 2 * wu * 4.25 };
+  });
+}
+
+console.log('\nfinger holes');
+for (const [i, r] of holeRoundness().entries()) {
+  console.log(`  hole ${i}: roundness ${r.ratio.toFixed(2)} ` +
+              `(1.00 = round on the ball)   dia ${r.diaIn.toFixed(2)}in`);
+  // 8% tolerance: the walk is a discrete step, not an analytic solve.
+  if (Math.abs(r.ratio - 1) > 0.08) {
+    failures.push(
+      `hole ${i} is not round on the ball: ${r.ratio.toFixed(2)}:1 ` +
+      `(${r.ratio > 1 ? 'wider than tall' : 'taller than wide'}). ` +
+      `Check the 2*sin(v*pi) correction in art.lua.`);
+  }
+}
+
 if (failures.length) {
   console.log('\nFAIL');
   for (const f of failures) console.log('  ' + f);
