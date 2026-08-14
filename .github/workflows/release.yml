@@ -203,9 +203,24 @@ jobs:
               else
                 echo "=== $g (reusing libmain.so) ==="
               fi
+              # NAME THE APK AFTER THE CART, not after the app's label.
+              #
+              # build-game-apk.sh defaults to a slug of the manifest's
+              # `name`, which is the on-device label -- so "5 Card Stud"
+              # became 5cardstud.apk beside fivecardstud.wasc, and the same
+              # for 7 Card Stud. A release listing where two of nine games
+              # sort somewhere else and do not match their cart is a
+              # release listing you have to think about.
+              #
+              # Passing the cart's own basename ties the two together at
+              # the source: they cannot drift again, and the app LABEL
+              # stays "5 Card Stud", which is the better name on a phone.
+              #
               # arm64-v8a is the default (every phone since ~2017). No WC_ABI
               # override: x86_64 is only for the emulator and is not shipped.
-              (cd android-host && WC_PHYSICS=ON ./build-game-apk.sh "$GITHUB_WORKSPACE/$c")
+              apk="$GITHUB_WORKSPACE/android-host/out/$(basename "$c" .wasc).apk"
+              (cd android-host && WC_PHYSICS=ON ./build-game-apk.sh \
+                 "$GITHUB_WORKSPACE/$c" "" "$apk")
             done
           done
           cp android-host/out/*.apk dist/ || true
