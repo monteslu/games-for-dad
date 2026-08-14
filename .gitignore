@@ -17,3 +17,5 @@ jewels/jewels.wasc
 jewels/main.wasm
 minigolf/minigolf.wasc
 minigolf/main.wasm
+pinochle/pinochle.wasc
+pinochle/main.wasm
