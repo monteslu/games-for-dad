@@ -96,8 +96,16 @@ def add(bb, x, y):
     if y < bb[2]: bb[2] = y
     if y > bb[3]: bb[3] = y
 
+# THE HUD IS NOT THE GAME. The scoreboard is a full-width 200px band at
+# the top and the spin meter sits low centre, and both are drawn in exactly
+# the greys this looks for -- the scoreboard's own grid line is (57,61,78),
+# which is inside the ball's range and pinned the right margin to 1px while
+# the actual pins had 100px of room. Search only the play area.
+HUD_TOP = 210
+HUD_BOTTOM = H - 260
+
 pins, ball = box(), box()
-for y in range(H):
+for y in range(HUD_TOP, HUD_BOTTOM):
     for x in range(W):
         r, g, b = px[x, y]
         mx, mn = max(r, g, b), min(r, g, b)

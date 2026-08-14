@@ -68,8 +68,19 @@ local PIT_LEN   = 680
 local PIT_DEPTH = 150               -- how far below the lane the well sits
 
 local BALL_R   = 52
-local PIN_R    = 22
-local PIN_H    = 130
+-- PIN_R IS THE PIN'S WIDEST RADIUS -- its belly -- because that is what
+-- everything else measures clearance against: whether the rack fits on the
+-- boards, where the deck ends, whether a pin has been shifted off its spot.
+--
+-- TRUE TO SCALE. Pins sit on 12in centres and PIN_SPACING is 96px, so the
+-- lane runs at 8px per inch, and a real pin is 4.766in at the belly -- a
+-- radius of 19. It was 28.6, FIFTY PERCENT TOO FAT, which left gaps
+-- between neighbours of 0.40 of the spacing where a real rack has 0.60.
+-- A rack packed that tightly cannot help but chain-react, which is why
+-- almost every ball was striking.
+local PIN_R    = 19
+-- A real pin is 15in tall, which at 8px per inch is 120.
+local PIN_H    = 120
 
 -- Where the pins stand. Ten pins, four rows, 12in centres -- the real
 -- triangle, pointing back at the bowler.
@@ -110,7 +121,11 @@ local PIN_FRICTION,  PIN_REST            = 0.22, 0.55
 -- The pin's own volume comes out of its six stacked hulls, so this is set
 -- against that rather than picked to look right.
 local PIN_DENSITY  = 0.9
-local BALL_DENSITY = 1.15
+-- RE-SOLVED when the pins were slimmed to true scale. A thinner pin is a
+-- much lighter one -- the volume fell from 187899 to 65771 -- so the old
+-- 1.15 left the ball at 11.4 times a pin's mass instead of the 4:1 a real
+-- 14lb ball and 3.5lb pin give. 0.40 puts it back.
+local BALL_DENSITY = 0.40
 
 -- How much a pin resists being spun and shoved. Small but not zero: a real
 -- pin does eventually stop, and zero damping leaves deadwood sliding around
@@ -448,7 +463,13 @@ local function newPin(x, z)
   -- Heights as fractions of PIN_H, measured from the pin's own centre
   -- (the body origin sits at PIN_H/2, so the base is at -PIN_H/2).
   local H = PIN_H
-  local rBase, rBelly, rNeck, rHead = PIN_R * 0.92, PIN_R * 1.30, PIN_R * 0.56, PIN_R * 0.80
+  -- The real USBC profile, in inches: 2.25 across the base, 4.766 at the
+  -- belly, waisted to 1.797 at the neck, 2.812 at the head. Divided
+  -- through by the belly (which is PIN_R) those are the ratios below --
+  -- so the pin's SHAPE is now measured rather than eyeballed, the same as
+  -- its width.
+  local rBase, rBelly, rNeck, rHead =
+    PIN_R * 0.472, PIN_R * 1.000, PIN_R * 0.377, PIN_R * 0.590
 
   -- Each section wears its OWN SLICE of the pin texture, given as the
   -- fraction of the pin's height it occupies -- centre y, plus or minus
@@ -1404,116 +1425,215 @@ local function drawHookArrow(cx, cy, len, dir, colour)
     hx + math.cos(a - 2.5) * s, hy + math.sin(a - 2.5) * s)
 end
 
+-- ── THE SCORESHEET ────────────────────────────────────────────────────
+--
+-- What every frame's little boxes should say, exactly as an alley monitor
+-- shows it. Returns ten entries of { marks = {"X"}, total = 30 or nil }.
+--
+--   X   strike        /   spare
+--   -   a miss: bowled, knocked nothing down
+--   ""  not bowled yet -- BLANK, which is a different thing from a dash,
+--       and the distinction is the whole reason this is a table of strings
+--       rather than a table of numbers
+--
+-- Frames 1-9 have two boxes, the tenth has three.
+--
+-- A STRIKE GOES IN THE FIRST BOX. The sources genuinely disagree here --
+-- USBC puts it in the upper-right (second) box, a holdover from the paper
+-- sheet's single notched corner, while the International Bowling
+-- Federation puts it upper-LEFT. Left-to-right wins because it is what
+-- every modern automatic scorer does, and it is the only rule that
+-- survives the tenth frame: "X X X" has to read left to right.
+--
+-- Totals stay BLANK until they can be known. A strike's frame is not
+-- scored until two more balls are thrown, and a real scorer shows an empty
+-- box that back-fills in a cascade -- which is worth reproducing, because
+-- watching the earlier frames fill in after a strike is half the pleasure
+-- of a good frame.
+local function scoreSheet(rs)
+  local out = {}
+  for f = 1, 10 do out[f] = { marks = { "", "", "" } } end
+
+  local i, total = 1, 0
+  for f = 1, 10 do
+    local a = rs[i]
+    if a == nil then break end
+    local e = out[f]
+
+    if f < 10 then
+      if a == 10 then
+        e.marks[1] = "X"
+        local b, c = rs[i + 1], rs[i + 2]
+        total = total + 10 + (b or 0) + (c or 0)
+        if b and c then e.total = total end
+        i = i + 1
+      else
+        local b = rs[i + 1]
+        e.marks[1] = a == 0 and "-" or tostring(a)
+        if b == nil then break end
+        if a + b == 10 then
+          e.marks[2] = "/"
+          local c = rs[i + 2]
+          total = total + 10 + (c or 0)
+          if c then e.total = total end
+        else
+          e.marks[2] = b == 0 and "-" or tostring(b)
+          total = total + a + b
+          e.total = total
+        end
+        i = i + 2
+      end
+    else
+      -- THE TENTH. Three boxes, filled in delivery order, and each ball is
+      -- shown for what it was: a strike is an X wherever it lands, and a
+      -- spare is a / against whatever preceded it in that pair.
+      local b, c = rs[i + 1], rs[i + 2]
+      e.marks[1] = (a == 10) and "X" or (a == 0 and "-" or tostring(a))
+      if b then
+        if a == 10 then
+          e.marks[2] = (b == 10) and "X" or (b == 0 and "-" or tostring(b))
+        elseif a + b == 10 then
+          e.marks[2] = "/"
+        else
+          e.marks[2] = b == 0 and "-" or tostring(b)
+        end
+      end
+      if c then
+        if c == 10 then e.marks[3] = "X"
+        elseif a == 10 and b and b < 10 and b + c == 10 then e.marks[3] = "/"
+        else e.marks[3] = c == 0 and "-" or tostring(c) end
+      end
+      -- the tenth scores once every ball it has earned has been thrown
+      local sum = (a or 0) + (b or 0) + (c or 0)
+      local needs = (a == 10 or (b and a + b == 10)) and 3 or 2
+      local have = (a and 1 or 0) + (b and 1 or 0) + (c and 1 or 0)
+      if have >= needs then
+        total = total + sum
+        e.total = total
+      end
+    end
+  end
+  return out
+end
+
 local function drawHUD()
   local g = love.graphics
   local total, frames = scoreGame(rolls)
 
-  -- THE SCORE, top left, as large as the vertical room allows.
+  -- (the running total is the last filled frame's, drawn in the strip
+  -- below rather than in a separate corner panel -- see the scoreboard)
+
+  -- ── THE SCOREBOARD ──────────────────────────────────────────────────
   --
-  -- Label FIRST and above, then the number under it. With the label below,
-  -- a one-digit score at 132px was a lone glyph floating over a word it
-  -- did not obviously belong to.
-  -- Solid ground under the score too, for the same reason as the strip.
-  g.setColor(0.05, 0.04, 0.07, 0.82)
-  g.rectangle("fill", 30, STRIP_Y - 20, 560, SCORE_SIZE + 100)
+  -- A REAL ONE. Frames 1-9 carry two small roll boxes and the tenth
+  -- carries three, each showing the mark for that ball -- X, /, a number,
+  -- or a dash for a miss -- with the RUNNING TOTAL beneath in a much
+  -- larger face. That is what an alley monitor shows, and it is a strictly
+  -- better instrument than the strip of frame totals this replaced: it
+  -- says what he actually threw, not merely what it added up to.
+  --
+  -- A BLANK BOX AND A DASH ARE DIFFERENT THINGS. Blank means not bowled
+  -- yet; "-" means bowled and knocked nothing down. Same for the total: it
+  -- stays empty until it CAN be known, so the frames after a strike sit
+  -- blank and then back-fill in a cascade when the bonus balls land, which
+  -- is half the pleasure of a good frame.
+  --
+  -- Full width and 200px tall, because the old strip was 96px in a corner
+  -- and this is the instrument he reads the game from.
+  local SB_Y, SB_H = 0, 200
+  local SB_X, SB_W = 0, 1920
+  local NAME_W  = 250
+  local F10_EXTRA = 82                      -- the tenth is visibly wider
+  local FW = (SB_W - NAME_W - F10_EXTRA) / 10
+  local F10_W = FW + F10_EXTRA
 
-  g.setFont(ui.font(theme.fontSmall))
-  g.setColor(theme.quiet)
-  g.print("SCORE", 56, STRIP_Y - 4)
+  local sheet = scoreSheet(rolls)
 
-  -- The number in the lane's own maple, which ties the HUD to the thing
-  -- it is reporting on and is warmer than plain white on this ground.
-  g.setFont(ui.font(SCORE_SIZE))
-  g.setColor(theme.lane)
-  g.print(tostring(total), 52, STRIP_Y + 22)
+  -- solid ground: the room behind is patterned carpet now
+  g.setColor(0.05, 0.045, 0.075, 0.93)
+  g.rectangle("fill", SB_X, SB_Y, SB_W, SB_H)
+  g.setColor(theme.gold[1], theme.gold[2], theme.gold[3], 0.30)
+  g.setLineWidth(3)
+  g.line(SB_X, SB_Y + SB_H, SB_X + SB_W, SB_Y + SB_H)
 
-  -- FRAME / BALL, under the score rather than centred across the top.
-  -- Centred put it straight under the frame strip, which starts at x=828 --
-  -- the two drew on top of each other and both became unreadable.
+  -- the bowler's panel, which is what a real board puts at the left
   g.setFont(ui.font(theme.fontMid))
-  g.setColor(1, 1, 1)
+  g.setColor(theme.lane)
+  g.print("YOU", 34, SB_Y + 54)
+  g.setFont(ui.font(theme.fontSmall - 6))
+  g.setColor(theme.quiet)
   if state == "done" then
-    g.print("GAME OVER", 56, STRIP_Y + SCORE_SIZE + 28)
+    g.print("GAME OVER", 34, SB_Y + 112)
   else
-    g.print(("FRAME %d of 10    BALL %d"):format(frameNo, ballNo),
-            56, STRIP_Y + SCORE_SIZE + 28)
-  end
-
-  -- THE FRAME STRIP, top right, so the whole game reads at a glance.
-  --
-  -- COLOURED BY WHAT HAPPENED. A strike is hot orange, a spare is cool
-  -- blue, an ordinary frame is neutral -- so the shape of his game is
-  -- legible from across the room without reading a single number. That is
-  -- the whole point of a scoreboard, and a strip of identical grey boxes
-  -- was not doing it.
-  local BOXW, BOXH = 104, 96
-  local x0 = 1920 - 52 - BOXW * 10
-
-  -- AN OPAQUE PLATE UNDER THE STRIP. The room behind it is a patterned
-  -- carpet now, and a translucent box over confetti is a box you cannot
-  -- read. Everything in the HUD that carries a number gets solid ground.
-  g.setColor(0.05, 0.04, 0.07, 0.86)
-  g.rectangle("fill", x0 - 14, STRIP_Y - 14, BOXW * 10 + 22, BOXH + 28)
-
-  -- What each frame was, walked from the rolls the same way scoring does.
-  local kind = {}
-  do
-    local i = 1
-    for f = 1, 10 do
-      local a = rolls[i]
-      if a == nil then break end
-      if a == 10 then kind[f] = "strike"; i = i + 1
-      else
-        local b = rolls[i + 1]
-        if b == nil then break end
-        kind[f] = (a + b == 10) and "spare" or "open"
-        i = i + 2
-      end
-    end
+    g.print(("FRAME %d  BALL %d"):format(frameNo, ballNo), 34, SB_Y + 112)
   end
 
   for f = 1, 10 do
-    local x = x0 + (f - 1) * BOXW
-    local k = kind[f]
-    local c = (k == "strike" and theme.strike)
-           or (k == "spare"  and theme.spare)
-           or (k == "open"   and theme.openFrame)
-           or nil
+    local w = (f == 10) and F10_W or FW
+    local x = NAME_W + (f - 1) * FW
+    local e = sheet[f]
+    local live = (f == frameNo and state ~= "done")
 
-    -- the box: tinted by result, brightest on the frame being played
-    if c then
-      g.setColor(c[1], c[2], c[3], 0.30)
-    else
-      g.setColor(1, 1, 1, f == frameNo and 0.20 or 0.07)
-    end
-    g.rectangle("fill", x, STRIP_Y, BOXW - 6, BOXH)
-
-    -- THE CURRENT FRAME wears a gold ring, which is this family's "you are
-    -- here" marker everywhere else.
-    if f == frameNo and state ~= "done" then
-      g.setColor(theme.gold)
-      g.setLineWidth(4)
-      g.rectangle("line", x, STRIP_Y, BOXW - 6, BOXH)
+    -- THE CURRENT FRAME IS A FILL, not just an outline. A thin border
+    -- vanishes at a distance and at an angle; a filled backing does not,
+    -- which is the same reason real boards tint the active bowler's whole
+    -- row rather than ringing it.
+    if live then
+      g.setColor(0.16, 0.26, 0.44, 0.95)
+      g.rectangle("fill", x, SB_Y, w, SB_H)
     end
 
-    g.setFont(ui.font(theme.fontSmall - 4))
-    g.setColor(1, 1, 1, 0.68)
-    g.printf(tostring(f), x, STRIP_Y + 6, BOXW - 6, "center")
+    -- grid: structure, so subordinate to the numbers it separates
+    g.setColor(0.24, 0.26, 0.33, 0.9)
+    g.setLineWidth(2)
+    g.line(x, SB_Y + 6, x, SB_Y + SB_H - 6)
 
-    -- X for a strike, / for a spare -- the marks a real scoresheet uses,
-    -- and they read faster than the number does.
-    if k == "strike" or k == "spare" then
-      g.setFont(ui.font(theme.fontSmall))
-      g.setColor(c[1], c[2], c[3], 0.95)
-      g.printf(k == "strike" and "X" or "/", x, STRIP_Y + 28, BOXW - 6, "center")
+    -- frame number, along the top
+    g.setFont(ui.font(theme.fontSmall - 8))
+    g.setColor(1, 1, 1, live and 0.85 or 0.45)
+    g.printf(tostring(f), x, SB_Y + 8, w, "center")
+
+    -- THE ROLL BOXES, top-right, which is where a scoresheet has always
+    -- put them -- the open space to their left is the notched corner the
+    -- paper original leaves.
+    local nb = (f == 10) and 3 or 2
+    local BS = 52
+    local bx0 = x + w - 10 - nb * BS
+    for r = 1, nb do
+      local bx = bx0 + (r - 1) * BS
+      g.setColor(0.10, 0.11, 0.15, 0.92)
+      g.rectangle("fill", bx, SB_Y + 34, BS - 4, BS - 4)
+      g.setColor(0.30, 0.33, 0.40, 0.9)
+      g.setLineWidth(2)
+      g.rectangle("line", bx, SB_Y + 34, BS - 4, BS - 4)
+
+      local m = e.marks[r]
+      if m ~= "" then
+        -- Colour is not canonical on real boards -- the X and / do the
+        -- work there -- but for an eighty-five-year-old on a tablet the
+        -- extra channel is worth more than strict fidelity.
+        g.setFont(ui.font(theme.fontMid))
+        if m == "X" then g.setColor(theme.strike)
+        elseif m == "/" then g.setColor(theme.spare)
+        elseif m == "-" then g.setColor(1, 1, 1, 0.42)
+        else g.setColor(1, 1, 1, 0.92) end
+        g.printf(m, bx, SB_Y + 38, BS - 4, "center")
+      end
     end
 
-    if frames[f] then
-      g.setFont(ui.font(theme.fontMid))
+    -- THE RUNNING TOTAL, big, low, and centred -- the number people
+    -- actually scan for, so it is the largest thing on the board.
+    if e.total then
+      g.setFont(ui.font(72))
       g.setColor(1, 1, 1)
-      g.printf(tostring(frames[f]), x, STRIP_Y + 56, BOXW - 6, "center")
+      g.printf(tostring(e.total), x, SB_Y + 104, w, "center")
     end
   end
+
+  -- the tenth's extra width gets its own closing line
+  g.setColor(0.24, 0.26, 0.33, 0.9)
+  g.setLineWidth(2)
+  g.line(SB_X + SB_W - 2, SB_Y + 6, SB_X + SB_W - 2, SB_Y + SB_H - 6)
 
   -- THE SPIN DIAL. Only while aiming -- it is a choice about the next
   -- throw, and leaving it on screen during the roll implies it can still
@@ -1591,9 +1711,12 @@ local function drawHUD()
     -- BELOW the alley, not above it. The scoreboard owns the top of the
     -- frame now, and STRIKE at y=300 would land on the frame strip; the
     -- room under the lane is empty and the banner reads fine there.
+    -- ABOVE the meter, not on it. At y=830 the banner landed straight
+    -- across the spin bar and both became unreadable at exactly the moment
+    -- STRIKE is the nicest thing on screen.
     g.setFont(ui.font(theme.fontHuge or theme.fontBig))
     g.setColor(1, 0.95, 0.6, math.min(1, msgT))
-    g.printf(msg, 0, 830, 1920, "center")
+    g.printf(msg, 0, 706, 1920, "center")
   elseif state == "aim" then
     g.setFont(ui.font(theme.fontSmall))
     g.setColor(theme.quiet)
