@@ -1,0 +1,318 @@
+---@type Dream
+local lib = _3DreamEngine
+
+---newScene
+---@param shadowPass boolean
+---@param dynamic boolean
+---@param alpha boolean
+---@param cam DreamCamera
+---@param blacklist Rasterizer
+---@param frustumCheck boolean
+---@param canvases DreamCanvases
+---@param light Rasterizer
+---@param isSun boolean
+---@return DreamScene
+---@private
+function lib:newScene(shadowPass, dynamic, alpha, cam, blacklist, frustumCheck, canvases, light, isSun)
+	---@type DreamScene
+	-- Scenes are pooled. A frame builds one scene per render pass per present
+	-- and drops it again inside buildScene(), so this allocated a scene table
+	-- plus a fresh task tree several times a frame, every frame, forever.
+	-- scenePoolUsed is reset once per frame in prepare() for the same reason
+	-- the task pool is: several scenes are alive at once within a frame.
+	local pool = self.scenePool
+	local pi = self.scenePoolUsed + 1
+	self.scenePoolUsed = pi
+	local m = pool[pi]
+	if not m then
+		m = setmetatable({ }, self.meta.scene)
+		m.tasks = { }
+		pool[pi] = m
+	end
+
+	-- Clear the task tree WITHOUT discarding it: the shader/material tables
+	-- are the same objects frame after frame, so their sub-lists are reused
+	-- and only their contents are dropped.
+	-- BOTH shapes are cleared, not just the one this scene is about to use: a
+	-- pooled scene can be handed out as an alpha scene (flat array of tasks)
+	-- one frame and a non-alpha scene (shader -> material -> list tree) the
+	-- next, and leftovers of the other shape would be walked as if they
+	-- belonged to this pass.
+	local tasks = m.tasks
+	for k, v in pairs(tasks) do
+		if type(k) == "number" then
+			tasks[k] = nil                      -- flat alpha entry
+		else
+			for _, list in pairs(v) do          -- shader -> material -> list
+				for i = #list, 1, -1 do list[i] = nil end
+			end
+		end
+	end
+
+	m.shadowPass = shadowPass
+	m.dynamic = dynamic
+	m.alpha = alpha
+	m.cam = cam
+	m.blacklist = blacklist or { }
+	m.frustumCheck = frustumCheck
+	m.canvases = canvases
+	m.light = light
+	m.isSun = isSun
+	
+	--setting specific identifier
+	m.settingsIdentifier = self:getGlobalSettingsIdentifier(alpha, canvases, shadowPass, isSun)
+	
+	return m
+end
+
+local function getPosition(mesh, transform)
+	if transform then
+		local a = mesh.boundingSphere.center
+		return lib.vec3(
+				transform[1] * a[1] + transform[2] * a[2] + transform[3] * a[3] + transform[4],
+				transform[5] * a[1] + transform[6] * a[2] + transform[7] * a[3] + transform[8],
+				transform[9] * a[1] + transform[10] * a[2] + transform[11] * a[3] + transform[12])
+	else
+		return mesh.boundingSphere.center
+	end
+end
+
+local function isWithingLOD(LOD_min, LOD_max, pos, size)
+	local camPos = lib.camera.position
+	if camPos then
+		local dist = math.max(((pos - camPos):length() - size) * lib.LODFactor, 0)
+		if dist <= LOD_max + 1 then
+			return dist >= LOD_min and dist <= LOD_max, true
+		else
+			return false, false
+		end
+	else
+		return true, true
+	end
+end
+
+---@class DreamScene
+local class = {
+	links = { "scene" },
+}
+
+---Adds an object to the scene
+---@param object DreamObject
+function class:add(object)
+	self:addObject(object, false, false)
+end
+
+---Adds an object to the scene
+---@param object DreamObject
+---@param parentTransform DreamMat4
+---@param dynamic boolean
+function class:addObject(object, parentTransform, dynamic)
+	if self.blacklist[object] then
+		return
+	end
+	
+	if object.dynamic ~= nil then
+		dynamic = object.dynamic
+	end
+	
+	--wrong dynamic layer
+	if self.dynamic ~= nil and self.dynamic ~= dynamic then
+		return
+	end
+	
+	--apply transformation
+	local transform
+	if parentTransform then
+		if object.transform then
+			transform = parentTransform * object.transform
+		else
+			transform = parentTransform
+		end
+	else
+		transform = object.transform
+	end
+	
+	--store final world transform for potential later use cases
+	object.globalTransform = transform
+	
+	local scale = transform and transform:getLossySize() or 1
+	
+	--handle LOD
+	--todo lod should be mesh-related, with it's parent object as distance metric, pass a lazy distance metric
+	if object.LOD_min or object.LOD_max then
+		--[[
+		--todo with the removal of  bounding-spheres for objects, we can now use the matrices translate components
+		local pos = getPosition(object, transform)
+		local size = getSize(object, transform)
+		local LOD_min = object.LOD_min or -math.huge
+		local LOD_max = object.LOD_max or math.huge
+		local found, preload = isWithingLOD(LOD_min, LOD_max, pos, size)
+		if preload then
+			object:preload()
+		end
+		if not found then
+			return
+		end
+		--]]
+	end
+	
+	--children
+	for _, o in pairs(object.objects) do
+		self:addObject(o, transform, dynamic)
+	end
+	
+	--meshes
+	for _, m in pairs(object.meshes) do
+		self:addMesh(m, transform, object.reflection or lib.defaultReflection, scale)
+	end
+end
+
+---Add a mesh to the scene
+---@param mesh DreamMesh
+---@param transform DreamMat4
+---@param reflection DreamReflection @ optional
+---@param scale number @ optional
+function class:addMesh(mesh, transform, reflection, scale)
+	if self.blacklist[mesh] then
+		return
+	end
+	
+	--not visible
+	if self.shadowPass then
+		if mesh.material.alpha or not mesh.shadowVisibility or mesh.material.shadow == false then
+			return
+		end
+	else
+		if not mesh.renderVisibility then
+			return
+		end
+	end
+	
+	--wrong alpha
+	if (self.alpha and true) ~= (mesh.material.alpha and true) then
+		return
+	end
+	
+	--todo cache
+	local pos = getPosition(mesh, transform)
+	
+	--too small to be worth rendering
+	--todo
+	--[[
+	if self.cam:getMinObjectSize() < size / dist then
+		return
+	end
+	--]]
+	
+	--not visible from current perspective
+	if self.frustumCheck and mesh.boundingSphere.size > 0 then
+		local size = mesh.boundingSphere.size * (scale or transform and transform:getLossySize() or 1)
+		mesh.rID = mesh.rID or math.random()
+		if not self.cam:inFrustum(pos, size, mesh.rID) then
+			return false
+		end
+	end
+	
+	--todo here custom reflections (closest globe or default) and lights can be used
+	
+	local shader = lib:getRenderShader(mesh, reflection, self.settingsIdentifier, self.alpha, self.canvases, self.light, self.shadowPass, self.isSun)
+	
+	local dist = self.alpha and (pos - self.cam.position):lengthSquared() or 0
+	
+	--create task object, recycled from the pool
+	--
+	-- Every mesh in every scene allocated a fresh 6-field table with a
+	-- metatable, every frame. A cart drawing ~20 meshes across 3 scenes a
+	-- frame burned 60 of these per frame plus the vec3 in getPosition. Tasks
+	-- are read by the render loop within the same frame and never retained
+	-- past it, so a global pool is safe -- and the pool is indexed by a
+	-- monotonic counter reset in newScene, so the SAME task object is not
+	-- handed out twice inside one frame.
+	local pool = lib.taskPool
+	local pi = lib.taskPoolUsed + 1
+	lib.taskPoolUsed = pi
+	local task = pool[pi]
+	if task then
+		task[1] = mesh
+		task[2] = transform
+		task[3] = pos
+		task[4] = shader
+		task[5] = reflection
+		task[6] = dist
+	else
+		task = setmetatable({
+			mesh,
+			transform,
+			pos,
+			shader,
+			reflection,
+			dist
+		}, lib.meta.task)
+		pool[pi] = task
+	end
+	
+	--add to list
+	self:addTo(task, shader, mesh.material)
+end
+
+function class:addTo(task, shader, material)
+	if self.alpha then
+		table.insert(self.tasks, task)
+	else
+		--create lists
+		if not self.tasks[shader] then
+			self.tasks[shader] = { [material] = { task } }
+		elseif not self.tasks[shader][material] then
+			self.tasks[shader][material] = { task }
+		else
+			table.insert(self.tasks[shader][material], task)
+		end
+	end
+end
+
+--sorting function for the alpha pass
+local function sortFunction(a, b)
+	return a:getDistance() > b:getDistance()
+end
+
+function class:getIterator()
+	if self.alpha then
+		table.sort(self.tasks, sortFunction)
+		
+		local i = 0
+		return function()
+			i = i + 1
+			return self.tasks[i]
+		end
+	else
+		-- Flattened into a reused buffer instead of a coroutine.
+		--
+		-- This created a coroutine plus two closures per scene per frame, and
+		-- a coroutine is one of the most expensive objects Lua can allocate
+		-- (it carries its own stack). The traversal order is identical -- the
+		-- same nested pairs() walk, just done eagerly into a list.
+		local flat = self.flatTasks
+		if not flat then
+			flat = { }
+			self.flatTasks = flat
+		end
+		local n = 0
+		for _, shaderGroup in pairs(self.tasks) do
+			for _, materialGroup in pairs(shaderGroup) do
+				for _, task in pairs(materialGroup) do
+					n = n + 1
+					flat[n] = task
+				end
+			end
+		end
+		local i = 0
+		return function()
+			i = i + 1
+			if i <= n then
+				return flat[i]
+			end
+		end
+	end
+end
+
+return class
