@@ -72,7 +72,13 @@ local SIDE_CAM_MIN_X = 900
 -- How far the camera rides above the deck, as an ANGLE. 45 degrees is
 -- halfway between a level side view (which flattens the rack into one row)
 -- and a top-down plan (which loses the pins standing up).
-local CAM_TILT       = math.rad(45)
+--
+-- 52 rather than 45: a little more of the deck turned toward the viewer,
+-- which opens the four rows of the rack out further and shows more of the
+-- lane's surface -- the boards and the ball's line along them are most of
+-- what there is to look at. Still well short of a plan view, so the pins
+-- keep their height and a standing pin still reads as standing.
+local CAM_TILT       = math.rad(52)
 -- The camera's FOV is VERTICAL. On a 16:9 frame the horizontal half-angle
 -- is what actually has to cover the lane's length, so the fitting maths
 -- works from this, not from the 56 passed to setFov.
@@ -956,41 +962,71 @@ local function drawAim()
   end
 end
 
+-- THE SCOREBOARD LIVES AT THE TOP, and it is big.
+--
+-- The alley is a wide, shallow band across the middle of the frame, which
+-- leaves a great deal of empty room above and below it -- and the score
+-- was down in the corner at 56px, competing with the bottom edge and the
+-- hint line. Up here it has the space to be read from across a room, which
+-- is the whole design brief for this family of games.
+local SCORE_SIZE = 132
+local STRIP_Y    = 40
+
 local function drawHUD()
   local g = love.graphics
   local total, frames = scoreGame(rolls)
 
+  -- THE SCORE, top left, as large as the vertical room allows.
+  --
+  -- Label FIRST and above, then the number under it. With the label below,
+  -- a one-digit score at 132px was a lone glyph floating over a word it
+  -- did not obviously belong to.
+  g.setFont(ui.font(theme.fontSmall))
+  g.setColor(theme.quiet)
+  g.print("SCORE", 56, STRIP_Y - 4)
+
+  g.setFont(ui.font(SCORE_SIZE))
+  g.setColor(1, 1, 1)
+  g.print(tostring(total), 52, STRIP_Y + 22)
+
+  -- FRAME / BALL, under the score rather than centred across the top.
+  -- Centred put it straight under the frame strip, which starts at x=828 --
+  -- the two drew on top of each other and both became unreadable.
   g.setFont(ui.font(theme.fontMid))
   g.setColor(1, 1, 1)
   if state == "done" then
-    g.printf("GAME OVER", 0, 14, 1920, "center")
+    g.print("GAME OVER", 56, STRIP_Y + SCORE_SIZE + 28)
   else
-    g.printf(("FRAME %d of 10   BALL %d"):format(frameNo, ballNo), 0, 14, 1920, "center")
+    g.print(("FRAME %d of 10    BALL %d"):format(frameNo, ballNo),
+            56, STRIP_Y + SCORE_SIZE + 28)
   end
 
-  g.setFont(ui.font(theme.fontBig))
-  g.print(("SCORE  %d"):format(total), 40, 986)
-
-  -- the frame strip, so he can see the game at a glance
-  local BOXW = 92
-  local x0 = 1920 - 40 - BOXW * 10
-  g.setFont(ui.font(theme.fontSmall))
+  -- The frame strip, top right, so the whole game reads at a glance.
+  -- Taller boxes than before: they now carry the running total at a size
+  -- worth reading rather than a 30px afterthought.
+  local BOXW, BOXH = 104, 96
+  local x0 = 1920 - 52 - BOXW * 10
   for f = 1, 10 do
     local x = x0 + (f - 1) * BOXW
-    g.setColor(1, 1, 1, f == frameNo and 0.20 or 0.08)
-    g.rectangle("fill", x, 972, BOXW - 6, 78)
-    g.setColor(1, 1, 1, 0.75)
-    g.printf(tostring(f), x, 978, BOXW - 6, "center")
+    g.setColor(1, 1, 1, f == frameNo and 0.22 or 0.08)
+    g.rectangle("fill", x, STRIP_Y, BOXW - 6, BOXH)
+    g.setFont(ui.font(theme.fontSmall - 4))
+    g.setColor(1, 1, 1, 0.70)
+    g.printf(tostring(f), x, STRIP_Y + 6, BOXW - 6, "center")
     if frames[f] then
+      g.setFont(ui.font(theme.fontMid + 4))
       g.setColor(1, 1, 1)
-      g.printf(tostring(frames[f]), x, 1012, BOXW - 6, "center")
+      g.printf(tostring(frames[f]), x, STRIP_Y + 36, BOXW - 6, "center")
     end
   end
 
   if msg then
+    -- BELOW the alley, not above it. The scoreboard owns the top of the
+    -- frame now, and STRIKE at y=300 would land on the frame strip; the
+    -- room under the lane is empty and the banner reads fine there.
     g.setFont(ui.font(theme.fontHuge or theme.fontBig))
     g.setColor(1, 0.95, 0.6, math.min(1, msgT))
-    g.printf(msg, 0, 300, 1920, "center")
+    g.printf(msg, 0, 830, 1920, "center")
   elseif state == "aim" then
     g.setFont(ui.font(theme.fontSmall))
     g.setColor(theme.quiet)
@@ -1050,10 +1086,26 @@ function love.draw()
   -- over run IS the tilt angle, so a fixed height would mean the angle
   -- drifted every time the fit moved the camera in or out.
   local tgtY = PIN_H * 0.5
+  -- THE ALLEY SITS LOW IN THE FRAME.
+  --
+  -- Aiming the camera exactly at the lane centres it, and centred is not
+  -- what this composition wants: the scoreboard now owns the top of the
+  -- screen, and a centred alley crowds it while leaving dead room below.
+  --
+  -- Done by AIMING ABOVE the lane rather than by moving the eye. The eye's
+  -- height is what defines the tilt angle (rise over run), so nudging it
+  -- would change how far the deck is turned toward the viewer -- coupling
+  -- two things that should stay independent. Lifting only the look-at
+  -- point slides the subject down the frame and leaves the angle alone.
+  -- 300, not 620. At 620 the lane was shoved down onto the hint line with
+  -- the whole upper two thirds of the frame empty carpet -- overcorrecting
+  -- a centred composition into a bottom-heavy one. This drops it clear of
+  -- the scoreboard and no further.
+  local LOOK_LIFT = 300
   local eye = dream.vec3(-dist / U,
                          (tgtY + dist * math.tan(CAM_TILT)) / U,
                          midZ / U)
-  local tgt = dream.vec3(0, tgtY / U, midZ / U)
+  local tgt = dream.vec3(0, (tgtY + LOOK_LIFT) / U, midZ / U)
 
   local cam = dream:newCamera(camWorld(eye, tgt))
   cam:setFov(CAM_FOV)

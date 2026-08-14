@@ -74,7 +74,12 @@ const call = (name, args) => rpc('tools/call', { name, arguments: args });
 // failure cannot recur quietly.
 //
 //   pins: near-white lacquer, low saturation, bright
-//   ball: dark purple marbling -- blue clearly above green, and dim
+//   ball: DARK GREY marbling, faintly cool. It was violet, and matching on
+//         "blue well ahead of green" stopped working the moment it turned
+//         grey -- which the test correctly caught as a FAIL rather than
+//         quietly measuring the pins alone. Matched now on being a
+//         mid-dark near-neutral, which is distinct from the lane (warm,
+//         r >> b), the carpet (much darker) and the pins (much brighter).
 function extent(path) {
   const py = `
 from PIL import Image
@@ -99,8 +104,17 @@ for y in range(H):
         # pin lacquer: bright and nearly neutral
         if mn > 150 and (mx - mn) < 60:
             add(pins, x, y)
-        # ball resin: dark, violet, blue ahead of green
-        elif 30 < mx < 165 and b > g + 18 and r > g + 6:
+        # ball resin: mid-dark and NEARLY NEUTRAL. All thresholds measured
+        # off the real render rather than guessed:
+        #   ball    ~(80,83,94)  -- b-r about 14, spread about 14
+        #   gutter  ~(40,46,58)  -- b-r about 18, but much DARKER
+        #   carpet  ~(16,13,24)  -- darker still
+        #   lane    ~(160,111,57) -- warm, r >> b
+        # The gutter is the trap here: it is cool like the ball and a naive
+        # "cool and mid-dark" rule matched the whole length of both
+        # channels, reporting a left margin of 0 for a ball that was
+        # nowhere near the edge. The floor at 62 is what separates them.
+        elif 62 < mx < 140 and 4 < (b - r) < 26 and (mx - mn) < 26:
             add(ball, x, y)
 
 both = box()

@@ -248,11 +248,15 @@ function M.makeTextures()
   T.ball = image(BS, BS, function(x, y, w, h)
     local u, v = x / (w - 1), y / (h - 1)
 
-    -- Deep marbled resin: swirls of a lighter tone through a dark body.
+    -- DARK GREY marbled resin, faintly cool. It was a deep violet, which
+    -- read as a purple dot against the warm lane -- the ball is the thing
+    -- the eye follows for the whole roll and it should read as a heavy
+    -- neutral object, not as the most saturated thing on screen. Lifted
+    -- well clear of black so the marbling is actually visible.
     local sw = fbm(x / 20, y / 20, 61, 4)
     local vein = fbm(x / 7 + sw * 3, y / 7, 67, 3)
     local l = 0.72 + sw * 0.42 + vein * 0.22
-    local r, g, b = 0.20 * l, 0.10 * l, 0.34 * l
+    local r, g, b = 0.30 * l, 0.31 * l, 0.35 * l
 
     -- The holes. Distance is measured with the longitude wrapped and
     -- SCALED BY sin(latitude): near the poles the u axis compresses, and
@@ -266,13 +270,21 @@ function M.makeTextures()
       local dv = v - hl.v
       local d = math.sqrt(du * du + dv * dv)
       if d < hl.r then
-        -- dark inside, with a lighter rim so it reads as a drilled hole
-        -- and not as a smudge
+        -- PITCH BLACK, set absolutely rather than scaled from the ball's
+        -- own colour. As a multiplier the hole could only ever be a dark
+        -- version of the resin, so lightening the ball lightened the holes
+        -- with it and they stopped reading as holes at all. A drilled hole
+        -- is a hole: no light comes back out of it.
+        --
+        -- The very edge lifts a touch so the rim reads as a bevelled lip
+        -- rather than a sticker, but the centre is flat zero.
         local t = d / hl.r
-        local k = 0.10 + t * t * 0.28
-        r, g, b = r * k, g * k, b * k
+        local lip = math.max(0, (t - 0.80) / 0.20)
+        local k = lip * lip * 0.10
+        r, g, b = k, k, k
       elseif d < hl.r * 1.16 then
-        r, g, b = r * 1.35, g * 1.35, b * 1.35
+        -- a bright rim just outside, the highlight on the drilled edge
+        r, g, b = r * 1.30, g * 1.30, b * 1.30
       end
     end
     return r, g, b
@@ -287,10 +299,13 @@ function M.makeTextures()
   -- The stripes have to land at the neck, and the pin is six stacked hulls
   -- rather than one mesh -- so v does not run 0..1 over the whole pin, it
   -- runs 0..1 over EACH SECTION. Placing the stripes by v alone would put
-  -- a pair of stripes on all six pieces. Instead main.lua gives each
-  -- section its own strip of this texture via the skin's uv offset, and
-  -- this image is authored as the pin's full height from base (v=0) to
-  -- head (v=1).
+  -- a pair of stripes on all six pieces. Instead main.lua hands each
+  -- section its own slice of this texture (dbg's vRange), and this image is
+  -- authored as the pin's full height.
+  --
+  -- HEAD-FIRST: v=0 is the crown and v=1 is the foot. That is the direction
+  -- buildTaper writes its texCoords, and assuming the opposite is what put
+  -- the stripes on the belly twice. Verified by rendering v as colour bands.
   T.pin = image(64, 256, function(x, y, w, h)
     local v = y / (h - 1)
     -- lacquer: near-white, very slightly warm, with faint wear
@@ -298,28 +313,38 @@ function M.makeTextures()
     local l = 0.965 + (wear - 0.5) * 0.055
     local r, g, b = 0.98 * l, 0.97 * l, 0.94 * l
 
-    -- THE TWO RED STRIPES GO ON THE NECK, NOT THE WAIST.
+    -- THE TWO RED STRIPES GO ON THE NECK, AND NOTHING GOES ON THE CAP.
     --
-    -- The pin's sections, in v: base 0.00-0.10, flare 0.10-0.30, belly
-    -- 0.30-0.46, NECK 0.46-0.74, head flare 0.74-0.90, cap 0.90-1.00. The
-    -- neck is the narrow waisted taper between the belly and the head, and
-    -- a real pin carries its stripes at the TOP of it -- right under where
-    -- the head flares back out, which on a USBC pin is about 10 inches up
-    -- a 15 inch pin.
+    -- v RUNS FROM THE HEAD DOWN, not from the base up. buildTaper writes
+    -- v=1 at a section's bottom ring and v=0 at its top, so the pin reads
+    -- head-first: v=0.0 is the crown, v=1.0 is the foot.
     --
-    -- The first pass put them at 0.700/0.775, which straddles the neck/head
-    -- join and reads as a band around the widest part of the shoulder --
-    -- visibly too low, and the wrong silhouette entirely.
+    -- This was got wrong twice by reasoning from the section list instead
+    -- of looking, and both times it put a fat band around the BELLY -- the
+    -- widest part of the pin, the one place a stripe must never be -- while
+    -- also wrapping the crown in red. It was settled by rendering v as ten
+    -- colour-coded bands and reading the answer off the screen:
+    --
+    --   v 0.00-0.10  cap / crown of the head   <- MUST STAY WHITE
+    --   v 0.10-0.26  head
+    --   v 0.26-0.42  NECK, the waisted taper   <- the stripes go here
+    --   v 0.42-0.70  belly, the widest part
+    --   v 0.70-0.90  flare down toward the base
+    --   v 0.90-1.00  base
+    --
+    -- Thin, and with white between them: at 0.024 half-width the pair
+    -- rendered as one heavy band, which is a different livery entirely.
     local function stripe(c, halfWidth)
       return math.abs(v - c) < halfWidth
     end
-    if stripe(0.640, 0.024) or stripe(0.706, 0.024) then
+    if stripe(0.310, 0.015) or stripe(0.370, 0.015) then
       r, g, b = 0.82 * l, 0.13 * l, 0.16 * l
     end
 
-    -- A faint dirt line at the very base, where a pin sits on the deck.
-    if v < 0.045 then
-      local k = 0.80 + (v / 0.045) * 0.20
+    -- A faint dirt line at the very base, where a pin sits on the deck --
+    -- which is v NEAR 1, the foot, not v near 0 (that is the crown).
+    if v > 0.955 then
+      local k = 0.80 + ((1 - v) / 0.045) * 0.20
       r, g, b = r * k, g * k, b * k
     end
     return r, g, b
