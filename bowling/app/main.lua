@@ -135,6 +135,55 @@ local burstSparks
 
 local function setMsg(s, secs) msg, msgT = s, secs or 2.2 end
 
+-- ── HEADLESS INTROSPECTION ────────────────────────────────────────────
+--
+-- The host can read two named debug fields, `score` and `aux`. That is the
+-- whole channel, so the rest of the game's state is PACKED into aux --
+-- enough for a test harness to drive ten frames and check the scoring
+-- without the cart shipping any cheat keys or a debug HUD.
+--
+--   score : the running total, straight out of scoreGame
+--   aux   : frame*100000 + ball*10000 + stateCode*1000 + rollCount*10
+--           + lastRoll
+--
+-- aux carries the ROLL COUNT and the LAST ROLL'S PIN COUNT rather than the
+-- pins currently standing. A harness cannot infer the rolls from standing
+-- counts: the rack resets between frames, so sampling before and after a
+-- ball straddles the reset and reports 0 for every second ball. The cart
+-- already knows exactly what each ball knocked down -- it is what gets
+-- pushed into `rolls` -- so it says so directly.
+--
+-- rollCount is 0..21 and lastRoll is 0..10, so both fit: aux stays under
+-- the i32 the field is declared as.
+--
+-- Read with romdev's wasm({op:'read', name:'aux'}).
+local STATE_CODE = { aim = 1, rolling = 2, settling = 3, between = 4, done = 5 }
+
+-- scoreGame is defined further down; declared here so this can call it.
+-- A `local function` declared later is a different upvalue entirely.
+local scoreGame
+
+local function publishState()
+  if not love.debugValue then return end
+  local total = scoreGame(rolls)
+  love.debugValue(0, total)
+
+  -- FIELD WIDTHS, chosen so nothing can carry into its neighbour:
+  --   lastRoll  0..10   -> 11 values, low field
+  --   rollCount 0..21   -> 22 values
+  --   state     0..5    -> 8  (round up, room to spare)
+  --   ball      1..3
+  --   frame     1..10
+  -- A strike is TEN, so lastRoll needs eleven values and cannot live in a
+  -- single decimal digit -- packing it against 10 would make a strike read
+  -- as zero with a phantom extra roll counted above it.
+  local code = STATE_CODE[state] or 0
+  local n = math.min(#rolls, 21)
+  local last = math.min(rolls[#rolls] or 0, 10)
+  love.debugValue(1, ((frameNo * 4 + ballNo) * 8 + code) * 22 * 11
+                     + n * 11 + last)
+end
+
 -- ── camera ────────────────────────────────────────────────────────────
 --
 -- 3Dream wants a WORLD matrix, not a view matrix. RIGHT is forward x up:
@@ -473,7 +522,9 @@ end
 --
 -- Real ten-pin scoring, including the tenth-frame extras: a strike or
 -- spare there earns fill balls, and their pins count into that frame.
-local function scoreGame(rs)
+-- ASSIGNS the forward-declared local above; not `local function`, which
+-- would shadow it and leave publishState calling nil.
+scoreGame = function(rs)
   local total, i = 0, 1
   local frames = {}
   for f = 1, 10 do
@@ -598,6 +649,8 @@ function love.load()
     if k == "score" then return (scoreGame(rolls)) end
     return nil
   end })
+
+  publishState()
 end
 
 -- How many pins are down? A pin is down when it has tipped past about 45
@@ -814,6 +867,10 @@ function love.update(dt)
     placeBall()
     state = "aim"
   end
+
+  -- LAST, so the host always reads settled state rather than something
+  -- mid-transition.
+  publishState()
 end
 
 -- ── drawing ───────────────────────────────────────────────────────────
