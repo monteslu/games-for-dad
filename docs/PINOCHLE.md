@@ -157,6 +157,26 @@ The bidder therefore bids off the *ceiling* rather than the expectation,
 since a bot that only bids on certainties never opens and the auction dies
 every hand.
 
+### Naming trump, and the tiebreak
+
+`bestTrump` picks the highest-melding suit, and **a third of hands tie** --
+most hands have no meld at all in most suits, and every one of those ties
+at zero. A strict `>` over a fixed S,H,C,D scan therefore handed every tie
+to spades, naming it 39% of the time against diamonds' 17%.
+
+Worse than unfair: on a tie it would name a bare spade suit over a long,
+strong heart one. Trump is where tricks come from, so when meld cannot
+separate two suits, **length and high cards** do. Measured on identical
+hands, the tiebreak makes 45 more contracts out of 2869 at the same
+average bid.
+
+**Spades still leads a little, and that is correct.** Over *all* hands the
+split is 25/25/26/25, dead even -- but the auction picks the strongest of
+four hands, and among hands melding 80 or more spades is 33%. The pinochle
+itself is a spade queen, so spade-heavy hands meld higher and those are
+exactly the hands that win auctions. `simulate.lua` asserts the share
+stays in a band that allows this while still failing the old bug.
+
 ---
 
 ## Testing

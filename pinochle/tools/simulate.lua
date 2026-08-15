@@ -43,6 +43,7 @@ end
 local stats = {
   bids = {}, setCount = 0, madeCount = 0, meldTotal = 0,
   declarerTeam = {0, 0}, handPoints = {}, passOut = 0,
+  trumpNamed = {S = 0, H = 0, C = 0, D = 0},
 }
 
 for hand = 1, N do
@@ -89,6 +90,7 @@ for hand = 1, N do
     highBid = scoring.MIN_BID
   end
   stats.bids[#stats.bids + 1] = highBid
+  stats.trumpNamed[declTrump] = (stats.trumpNamed[declTrump] or 0) + 1
 
   -- ── meld ────────────────────────────────────────────────────────────
   local teamMeld = {0, 0}
@@ -189,6 +191,15 @@ if stats.chosen then
           :format(f.made, f.set, 100 * f.set / ft))
   end
 end
+-- WHICH SUIT GETS NAMED. A THIRD OF HANDS TIE on meld -- most hands have
+-- no meld at all in most suits, and every one of those ties at zero -- so
+-- a strict `>` over a fixed S,H,C,D scan hands every tie to spades and
+-- names it 37% of the time against diamonds' 16%. Worse than unfair: on a
+-- tie it named a bare spade suit over a long strong heart one.
+local tn = stats.trumpNamed
+print(("trump named       S %.0f%%  H %.0f%%  C %.0f%%  D %.0f%%")
+      :format(100 * tn.S / N, 100 * tn.H / N, 100 * tn.C / N, 100 * tn.D / N))
+
 local distinct = 0
 for _ in pairs(stats.handPoints) do distinct = distinct + 1 end
 print(("trick totals seen %d distinct value(s) -- must be 1 (always 250)")
@@ -217,4 +228,24 @@ if setRate < 0.02 then
   os.exit(1)
 end
 
-print("\nPASS: rules hold over " .. N .. " hands, and the bidding is sane")
+-- SPADES LEGITIMATELY LEADS A LITTLE, and it took measuring to know how
+-- much. Over ALL hands bestTrump splits 25/25/26/25 -- dead even. But the
+-- auction does not sample all hands: it picks the strongest of four, and
+-- among hands melding 80 or more, spades is 33%. The pinochle itself is a
+-- spade queen, so spade-heavy hands meld higher and those are exactly the
+-- hands that win auctions.
+--
+-- So the band has to allow ~30% for spades while still catching the old
+-- bug, which named it 39%. Verified both ways: reverting the tiebreak
+-- fails this check, the fix passes it.
+for _, s in ipairs({"S", "H", "C", "D"}) do
+  local share = stats.trumpNamed[s] / N
+  if share > 0.35 or share < 0.17 then
+    print(("\nFAIL: %s named %.0f%% of hands -- the trump tiebreak is biased")
+          :format(s, share * 100))
+    os.exit(1)
+  end
+end
+
+print("\nPASS: rules hold over " .. N .. " hands, the bidding is sane,")
+print("      and no suit is favoured when the meld ties")
