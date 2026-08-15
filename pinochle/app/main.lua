@@ -1021,7 +1021,19 @@ function love.draw()
           g.rectangle("fill", c.sx, y, theme.cardW, theme.cardH)
         end
       end
-      if picked then ui.heldBadge(c.sx, y, theme.cardW, theme.cardH) end
+      -- A PASS MARKER, not jacks-or-better's HELD badge. That badge spans
+      -- the card's full width plus 12px, and in an overlapping fan four of
+      -- them merge into one solid gold bar across the hand -- unreadable,
+      -- and it says the wrong word besides. This sits INSIDE the card's
+      -- visible sliver so each pick reads separately.
+      if picked then
+        local bw = math.min(theme.cardW, southStep(#hands[1]))
+        g.setColor(theme.gold)
+        g.rectangle("fill", c.sx, y + theme.cardH - 76, bw, 44)
+        g.setColor(theme.ink)
+        g.setFont(ui.font(theme.fontSmall - 8))
+        g.printf("PASS", c.sx, y + theme.cardH - 68, bw, "center")
+      end
       if (state == "pass_pick" and focusPos == i) or
          (state == "play_pick" and legalIdx[focusPos] == i) then
         ui.focusRing(c.sx, y, theme.cardW, theme.cardH)
