@@ -45,10 +45,11 @@ Four-handed partnership pinochle, and the second trick-taking game here.
 48 cards &mdash; two of every A, 10, K, Q, J, 9 &mdash; and the ten ranks
 *second*, between the ace and the king.
 
-Bid for the contract, name trump, lay down meld, then twelve tricks. First
-team to 1500. **Shaped deliberately after Spades**: same seats, same
-controls, same table, because the point of a second trick-taking game is
-that it feels like the one you already know.
+Bid for the contract, name trump, then the **pass** &mdash; the declarer's
+partner sends four cards across and the declarer sends four back &mdash;
+then meld, then twelve tricks. First team to 1500. **Shaped deliberately
+after Spades**: same seats, same controls, same table, because the point of
+a second trick-taking game is that it feels like the one you already know.
 
 **The meld panel names every meld and what it is worth** &mdash; "PINOCHLE
 40", "ROYAL MARRIAGE 40", "KINGS AROUND 80". Meld-spotting is the hardest

@@ -47,7 +47,19 @@ local ORIGIN = {
 }
 local DECK_POS = {960, 455}
 
-local function southStartX(n) return (W - ((n - 1) * SOUTH_STEP + theme.cardW)) / 2 end
+-- THE FAN STEP IS DERIVED, NOT FIXED. A hand is normally twelve cards,
+-- but during the pass the declarer briefly holds SIXTEEN -- and at the
+-- twelve-card step of 112 that is 1940px on a 1920px screen, so the hand
+-- ran off both edges. Squeeze to fit whatever is held, never past the
+-- comfortable step.
+local FAN_MAX_W = 1760
+local function southStep(n)
+  if n <= 1 then return SOUTH_STEP end
+  local fit = (FAN_MAX_W - theme.cardW) / (n - 1)
+  return math.min(SOUTH_STEP, fit)
+end
+
+local function southStartX(n) return (W - ((n - 1) * southStep(n) + theme.cardW)) / 2 end
 local function northStartX(n) return (W - ((n - 1) * NORTH_STEP + CPU_W)) / 2 end
 local function sideStartY(n) return (H - ((n - 1) * SIDE_STEP + CPU_H)) / 2 end
 
@@ -61,7 +73,7 @@ local state = "idle"
 local STATE_ID = { idle = 1, dealing = 2, bid_wait = 3, bid_pick = 4,
   trump_pick = 5, meld_show = 6, cpu_think = 7, play_pick = 8,
   anim_play = 9, trick_pause = 10, sweep = 11, hand_result = 12,
-  game_over = 13 }
+  game_over = 13, pass_pick = 14, pass_wait = 15 }
 
 local hands = {{}, {}, {}, {}}
 local teamScore = {0, 0}
@@ -77,6 +89,11 @@ local announce = nil
 local ringSeat = nil
 local bidSel, suggested = scoring.MIN_BID, scoring.MIN_BID
 local trumpSel = 1
+-- THE PASS. After trump is named the declarer's partner sends four cards
+-- across and the declarer sends four back. passSel is the human's current
+-- selection; passDir says which half of the exchange we are in.
+local passSel = {}          -- set of hand indices, at most PASS_N
+local passDir = nil         -- "send" (we are the partner) | "return" (we declare)
 local legalIdx, focusPos = {}, 1
 local result, gameOverData, moodUs = nil, nil, nil
 local deck, landedCount = nil, 0
@@ -185,13 +202,90 @@ end
 
 local function relayoutSouth()
   local n = #hands[1]
-  local x = southStartX(n)
+  local x, st = southStartX(n), southStep(n)
   for i, c in ipairs(hands[1]) do
-    c.sx = x + (i - 1) * SOUTH_STEP
+    c.sx = x + (i - 1) * st
   end
 end
 
 local advanceTurn, endTrick
+
+-- ── the pass ──────────────────────────────────────────────────────────
+--
+-- Four cards each way, after trump is named and before meld -- which is
+-- the only order that works: you cannot choose cards without knowing
+-- trump, and the exchange changes what melds.
+local function moveCards(from, to, idx)
+  table.sort(idx, function(a, b) return a > b end)   -- remove high-first
+  local moved = {}
+  for _, i in ipairs(idx) do
+    moved[#moved + 1] = table.remove(from, i)
+  end
+  for _, c in ipairs(moved) do to[#to + 1] = c end
+  return moved
+end
+
+local beginReturn, finishPass
+
+-- The chosen indices, always in ascending order so moveCards can reverse
+-- them safely.
+local function selectedPass()
+  local t = {}
+  for i in pairs(passSel) do t[#t + 1] = i end
+  table.sort(t)
+  return t
+end
+
+-- Start the exchange. The DECLARER'S PARTNER sends first, always -- the
+-- declarer needs to see what arrived before deciding what to send back,
+-- which is the standard sequential pass rather than the blind variant.
+local function beginPass()
+  passSel = {}
+  local partner = rules.partner(declarer)
+  if partner == 1 then
+    -- the human is the partner: he chooses what to arm the declarer with
+    passDir = "send"
+    announce = nil            -- the panel says it; the lane sits behind it
+    state = "pass_pick"
+  else
+    passDir = nil
+    state = "pass_wait"
+    setAnnounce(NAME[partner] .. " IS PASSING", theme.quiet)
+    pause(50, function()
+      local idx = bot.choosePass(hands[partner], trump)
+      moveCards(hands[partner], hands[declarer], idx)
+      rules.sortHand(hands[declarer], trump)
+      if declarer == 1 then relayoutSouth() end
+      sounds.play("deal", 0.8)
+      beginReturn()
+    end)
+  end
+end
+
+-- The second half: the declarer returns four.
+beginReturn = function()
+  passSel = {}
+  if declarer == 1 then
+    passDir = "return"
+    announce = nil            -- the panel says it; the lane sits behind it
+    rules.sortHand(hands[1], trump)
+    relayoutSouth()
+    state = "pass_pick"
+  else
+    passDir = nil
+    state = "pass_wait"
+    setAnnounce(NAME[declarer] .. " IS PASSING BACK", theme.quiet)
+    pause(50, function()
+      local idx = bot.chooseReturn(hands[declarer], trump)
+      moveCards(hands[declarer], hands[rules.partner(declarer)], idx)
+      local p = rules.partner(declarer)
+      rules.sortHand(hands[p], trump)
+      if p == 1 then relayoutSouth() end
+      sounds.play("deal", 0.8)
+      finishPass()
+    end)
+  end
+end
 
 -- ── meld, once trump is known ─────────────────────────────────────────
 local function layMeld()
@@ -212,6 +306,20 @@ local function layMeld()
   sounds.play("chips", 0.7)
   state = "meld_show"
   confirmHeld = true
+end
+
+finishPass = function()
+  passDir, passSel = nil, {}
+  announce = nil
+  -- EVERY HAND MUST BE BACK TO TWELVE. A pass that dropped or duplicated a
+  -- card would be invisible until someone ran out mid-trick, so check here
+  -- where it is cheap and obvious.
+  for s = 1, 4 do
+    if #hands[s] ~= 12 then
+      setAnnounce("PASS ERROR: seat " .. s .. " has " .. #hands[s], theme.lossRed)
+    end
+  end
+  layMeld()
 end
 
 local function startPlay()
@@ -287,7 +395,7 @@ local function startHand()
         local south = (seat == 1)
         local tx, ty, ts
         if south then
-          c.sx = southStartX(12) + (r - 1) * SOUTH_STEP
+          c.sx = southStartX(12) + (r - 1) * southStep(12)
           tx, ty, ts = c.sx + theme.cardW / 2, SOUTH_Y + theme.cardH / 2, 1
         elseif seat == 3 then
           tx, ty, ts = northStartX(12) + (r - 1) * NORTH_STEP + CPU_W / 2,
@@ -500,7 +608,7 @@ function love.update(dt)
           trump = hands[declarer].wantTrump or meld.bestTrump(hands[declarer])
           setAnnounce(NAME[declarer] .. " NAMES " .. SUIT_LABEL[trump])
           sounds.play("place", 0.8)
-          pause(40, layMeld)
+          pause(40, beginPass)
         end
       end)
     end
@@ -520,7 +628,65 @@ function love.update(dt)
       trump = SUITS[trumpSel]
       setAnnounce("TRUMP IS " .. SUIT_LABEL[trump])
       sounds.play("place", 0.8)
-      pause(30, layMeld)
+      pause(30, beginPass)
+    end
+
+  elseif state == "pass_pick" then
+    -- THE SAME HOLD/UNHOLD GESTURE JACKS OR BETTER USES: move the cursor,
+    -- toggle a card, and it tucks up with a badge. He already knows it
+    -- from the poker game, so the pass is not a new thing to learn.
+    local n = #hands[1]
+    if edges.left then focusPos = ((focusPos - 2) % n) + 1 end
+    if edges.right then focusPos = (focusPos % n) + 1 end
+
+    local function toggle(i)
+      if passSel[i] then
+        passSel[i] = nil
+        sounds.play("place", 0.4)
+      elseif #selectedPass() < bot.PASS_N then
+        passSel[i] = true
+        sounds.play("place", 0.6)
+      end
+    end
+
+    if confirmPressed() then toggle(focusPos) end
+    -- UP commits, because confirm is busy toggling. The panel says so,
+    -- and the PLAY button does the same thing for touch.
+    local ready = (#selectedPass() == bot.PASS_N)
+    if ready and edges.up then
+      click = {x = PLAY_BTN.x + 4, y = PLAY_BTN.y + 4}   -- reuse one path
+    end
+    if click then
+      for i = n, 1, -1 do
+        local c = hands[1][i]
+        local y = passSel[i] and (SOUTH_Y - LIFT) or SOUTH_Y
+        if c.dealt and not c.flying
+            and clicked({x = c.sx, y = y, w = theme.cardW, h = theme.cardH}) then
+          focusPos = i
+          toggle(i)
+          break
+        end
+      end
+    end
+
+    -- EXACTLY FOUR, no more and no fewer -- the rule is emphatic and a
+    -- short pass would leave hands at the wrong size. The button simply
+    -- does not arm until four are chosen.
+    if #selectedPass() == bot.PASS_N and clicked(PLAY_BTN) then
+      local idx = selectedPass()
+      local other = (passDir == "send") and declarer or rules.partner(declarer)
+      moveCards(hands[1], hands[other], idx)
+      rules.sortHand(hands[other], trump)
+      rules.sortHand(hands[1], trump)
+      relayoutSouth()
+      passSel, focusPos = {}, 1
+      sounds.play("deal", 0.8)
+      if passDir == "send" then
+        -- we armed the declarer; now they send back
+        pause(24, beginReturn)
+      else
+        pause(24, finishPass)
+      end
     end
 
   elseif state == "play_pick" then
@@ -839,7 +1005,8 @@ function love.draw()
   -- dad's fan
   for i, c in ipairs(hands[1]) do
     if c.dealt and not c.flying then
-      local lifted = (state == "play_pick" and legalIdx[focusPos] == i)
+      local picked = (state == "pass_pick" and passSel[i])
+      local lifted = (state == "play_pick" and legalIdx[focusPos] == i) or picked
       local y = lifted and (SOUTH_Y - LIFT) or SOUTH_Y
       cards.drawCard(c, c.sx, y, 1)
       -- ILLEGAL CARDS ARE DIMMED, never hidden and never an error message.
@@ -854,7 +1021,11 @@ function love.draw()
           g.rectangle("fill", c.sx, y, theme.cardW, theme.cardH)
         end
       end
-      if lifted then ui.focusRing(c.sx, y, theme.cardW, theme.cardH) end
+      if picked then ui.heldBadge(c.sx, y, theme.cardW, theme.cardH) end
+      if (state == "pass_pick" and focusPos == i) or
+         (state == "play_pick" and legalIdx[focusPos] == i) then
+        ui.focusRing(c.sx, y, theme.cardW, theme.cardH)
+      end
     end
   end
 
@@ -875,7 +1046,34 @@ function love.draw()
     g.printf(announce.text, 0, 232, W, "center")
   end
 
-  if state == "play_pick" then
+  if state == "pass_pick" then
+    local n = #selectedPass()
+    local ready = (n == bot.PASS_N)
+    g.setColor(0, 0, 0, 0.82)
+    g.rectangle("fill", 560, 250, 800, 210)
+    g.setColor(theme.gold)
+    g.rectangle("line", 560, 250, 800, 210)
+    g.setFont(ui.font(theme.fontMid))
+    g.setColor(theme.white)
+    g.printf(passDir == "send" and "PASS 4 TO YOUR PARTNER"
+                                or "PASS 4 BACK", 560, 272, 800, "center")
+    g.setFont(ui.font(theme.fontBig))
+    g.setColor(ready and theme.win or theme.quiet)
+    g.printf(n .. " OF " .. bot.PASS_N .. " CHOSEN", 560, 322, 800, "center")
+    g.setFont(ui.font(theme.fontSmall))
+    g.setColor(theme.dim)
+    -- WHAT TO SEND, said in words. Choosing four from twelve under a rule
+    -- you half-remember is the likeliest place to stall, and the advice is
+    -- short enough to read from the couch.
+    g.printf(passDir == "send" and "send your trump and aces"
+                                or "send back what you cannot use",
+             560, 396, 800, "center")
+    g.setColor(ready and theme.gold or theme.dim)
+    g.printf(ready and "press UP to send" or "A to pick a card",
+             560, 428, 800, "center")
+    ui.button("SEND", PLAY_BTN.x, PLAY_BTN.y, PLAY_BTN.w, PLAY_BTN.h, ready)
+
+  elseif state == "play_pick" then
     ui.button("PLAY", PLAY_BTN.x, PLAY_BTN.y, PLAY_BTN.w, PLAY_BTN.h, true)
   elseif state == "bid_pick" then
     drawBidPanel()

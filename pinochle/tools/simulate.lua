@@ -92,6 +92,31 @@ for hand = 1, N do
   stats.bids[#stats.bids + 1] = highBid
   stats.trumpNamed[declTrump] = (stats.trumpNamed[declTrump] or 0) + 1
 
+  -- ── the pass ────────────────────────────────────────────────────────
+  -- Four across from the declarer's partner, four back. This is where a
+  -- card would go missing if moveCards were wrong, and a lost card is
+  -- invisible until someone runs out mid-trick.
+  do
+    local partner = rules.partner(declarer)
+    local function move(from, to, idx)
+      table.sort(idx, function(a, b) return a > b end)
+      local moved = {}
+      for _, i in ipairs(idx) do moved[#moved + 1] = table.remove(from, i) end
+      for _, c in ipairs(moved) do to[#to + 1] = c end
+    end
+    move(hands[partner], hands[declarer], bot.choosePass(hands[partner], declTrump))
+    check(#hands[declarer] == 16,
+          ("hand %d: declarer holds %d after receiving"):format(hand, #hands[declarer]))
+    check(#hands[partner] == 8,
+          ("hand %d: partner holds %d after sending"):format(hand, #hands[partner]))
+    move(hands[declarer], hands[partner], bot.chooseReturn(hands[declarer], declTrump))
+    for s = 1, 4 do
+      check(#hands[s] == 12,
+            ("hand %d: seat %d holds %d after the pass, not 12")
+            :format(hand, s, #hands[s]))
+    end
+  end
+
   -- ── meld ────────────────────────────────────────────────────────────
   local teamMeld = {0, 0}
   for s = 1, 4 do

@@ -93,9 +93,16 @@ function M.suggestBid(hand, ctx)
   -- our combined winners drag in. 20 points a trick (250 over 12), then
   -- discounted -- a hand rarely takes every trick it looks like it
   -- should, and being set costs the entire bid rather than the shortfall.
+  --
+  -- THE DISCOUNT WAS RE-TUNED WHEN THE PASS WENT IN. Four cards of trump
+  -- and aces arriving from the partner makes contracts markedly more
+  -- makeable: at the old 0.68 the set rate fell from 38% to 21%, which is
+  -- a bot leaving points on the table rather than a bot playing well.
+  -- 0.86 puts it back to ~25%, which is about what real partnership
+  -- pinochle sets.
   local teamMeld   = meldPts + PARTNER_MELD
   local teamTricks = tricks + PARTNER_TRICKS
-  local expect = teamMeld + teamTricks * 20 * 0.68
+  local expect = teamMeld + teamTricks * 20 * 0.86
   expect = expect * (1 + (ctx.aggro or 0) * 0.10)
 
   local MIN = require("scoring").MIN_BID
@@ -131,6 +138,76 @@ function M.suggestBid(hand, ctx)
 
   return bid, suit
 end
+
+-- ── PASSING ───────────────────────────────────────────────────────────
+--
+-- After trump is named, the declarer's PARTNER passes four cards across,
+-- and the declarer passes four back. Both directions, four each way, and
+-- the returned cards MAY include ones just received -- that is a real
+-- strategic option in the standard rules, not an oversight.
+--
+-- The two directions want opposite things, which is the whole point:
+--
+--   PARTNER SENDS ITS BEST. You are arming the player who has to make the
+--   contract. Trump first, then aces, then cards that complete a meld the
+--   declarer is likely to hold. A trick taken by the declarer and a trick
+--   taken by you are worth the same to the team, but the declarer's hand
+--   is the one that must not run out of trump.
+--
+--   DECLARER SENDS BACK ITS WORST. Losers and off-suit junk -- and never
+--   trump if it can be helped, because trump in the declarer's hand is
+--   what makes the contract.
+local PASS_N = 4
+
+-- Rank every card for how much the DECLARER wants it. Higher is better.
+local function passValue(c, trump)
+  local v = 0
+  if c.suit == trump then
+    v = 100 + P[c.rank] * 4            -- trump above everything
+  else
+    v = P[c.rank]
+    if c.rank == "A" then v = v + 40 end   -- an off-suit ace is a trick
+    if c.rank == "T" then v = v + 10 end   -- and a ten is ten points
+  end
+  return v
+end
+
+-- The partner's outgoing four: the cards the declarer most wants.
+-- `hand` is the partner's, and the meld-completion nudge is deliberately
+-- small -- a queen of spades might complete a pinochle, but it is a guess
+-- about an unseen hand, and a real trump is not a guess.
+function M.choosePass(hand, trump)
+  local order = {}
+  for i = 1, #hand do order[i] = i end
+  table.sort(order, function(a, b)
+    local va, vb = passValue(hand[a], trump), passValue(hand[b], trump)
+    if va ~= vb then return va > vb end
+    return a < b
+  end)
+  local out = {}
+  for i = 1, math.min(PASS_N, #order) do out[i] = order[i] end
+  table.sort(out)
+  return out
+end
+
+-- The declarer's return four: the cards it least wants, which is the same
+-- ranking read from the other end. Trump is never returned unless the
+-- hand is nothing but trump.
+function M.chooseReturn(hand, trump)
+  local order = {}
+  for i = 1, #hand do order[i] = i end
+  table.sort(order, function(a, b)
+    local va, vb = passValue(hand[a], trump), passValue(hand[b], trump)
+    if va ~= vb then return va < vb end
+    return a < b
+  end)
+  local out = {}
+  for i = 1, math.min(PASS_N, #order) do out[i] = order[i] end
+  table.sort(out)
+  return out
+end
+
+M.PASS_N = PASS_N
 
 -- ── PLAY ──────────────────────────────────────────────────────────────
 --

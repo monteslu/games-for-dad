@@ -22,7 +22,9 @@ double deck, bidding to a number, naming trump, and meld.
   last**, exactly as in Spades, so he always decides with every other bid
   already on the table. Pass is final. If all four pass, the dealer's team
   takes it at the minimum.
-- The high bidder **names trump** and **leads to the first trick**.
+- The high bidder **names trump**, then the **pass**: the declarer's
+  partner sends **4 cards** across and the declarer sends **4 back** (which
+  may include cards just received). The declarer then **leads**.
 - **Meld** is laid down before play: partners' melds add, and both teams
   score theirs.
 - Twelve tricks. Counters are **A, 10 and K at ten each**; last trick is
@@ -46,7 +48,46 @@ double deck, bidding to a number, naming trump, and meld.
   relaxation where heading is only required on a trump lead. About half of
   US players use each; "always beat if you can" is one rule to remember
   instead of a conditional one.
-- **No kitty, no card passing, no three-handed variant.**
+- **No kitty and no three-handed variant.**
+
+---
+
+## The pass, and a rule I got wrong first
+
+**I originally shipped this without a passing phase**, on research that
+said passing belonged to double-deck pinochle and was rare in the
+single-deck partnership game. That was wrong, and it took a second look to
+establish it — the first pass conflated *"distinctive to double-deck"*
+with *"rare in single-deck."*
+
+Passing is standard. [Pagat](https://www.pagat.com/marriage/pinmain.html)
+is emphatic — *"Exactly four cards must be sent; no more and no fewer"* —
+and frames the NON-passing game as the variant ("cutthroat").
+[cardgames.io](https://cardgames.io/blog/how-to-play-pinochle/) says
+"Passing cards is not optional." Every serious digital implementation does
+it: NeuralPlay defaults to 4 and makes it configurable 0–5, Trickster
+offers none/2/3/4, cardgames.io and World of Card Games are always-on at 4.
+
+**Four each way is dominant; three is a real minority variant** (gamerules
+documents a 3-card *blind* pass). This game uses four, sequential — the
+partner sends first and the declarer sees what arrived before choosing the
+return, which is both the majority rule and the more forgiving one.
+
+**It happens after trump is named**, which is forced rather than chosen:
+you cannot sensibly pick cards to pass without knowing trump, and the
+exchange changes what melds, so it must sit between `trump_pick` and
+`meld_show`.
+
+Strategy, and what the bot does: the **partner sends trump first, then
+aces** — you are arming the player who has to make the contract — and the
+**declarer sends back losers and off-suit junk**, never trump if it can be
+helped.
+
+**Adding it moved the numbers a lot.** The set rate fell from 38% to 21%,
+because four cards of trump and aces makes contracts markedly more
+makeable. That is the pass doing its job, but it left the bid estimate too
+timid, so the discount was re-tuned 0.68 → 0.86 and the rate is back to
+~26% — about what real partnership pinochle sets.
 
 ---
 
