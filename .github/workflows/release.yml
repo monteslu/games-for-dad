@@ -160,7 +160,7 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
 
       # ImageMagick, for the per-game launcher icons. build-game-apk.sh
       # resizes each game's icon.png into the five mipmap densities with
