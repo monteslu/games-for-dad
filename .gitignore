@@ -5,8 +5,9 @@
 # rebuilt from source by CI on every release. Committing them means a 3.4MB
 # binary diff every time a single line of Lua changes.
 #
-# The card games are different: they have no build.sh and ship a committed
-# cart, which is why this is not a blanket *.wasc.
+# The card games commit their engine (main.wasm, a pinned build) but not
+# their cart: a committed cart carries whatever version it was packed at, and
+# a release's carts carry the release's (README, "Versions").
 bowling/bowling.wasc
 bowling/main.wasm
 combo/combo.wasc
@@ -19,3 +20,11 @@ minigolf/minigolf.wasc
 minigolf/main.wasm
 pinochle/pinochle.wasc
 pinochle/main.wasm
+fivecardstud/fivecardstud.wasc
+jacksorbetter/jacksorbetter.wasc
+sevencardstud/sevencardstud.wasc
+spades/spades.wasc
+fivecardstud/app/assets.index
+jacksorbetter/app/assets.index
+sevencardstud/app/assets.index
+spades/app/assets.index

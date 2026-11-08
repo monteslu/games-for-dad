@@ -12,6 +12,8 @@
 #   ENGINE        an explicit engine.wasm, overriding WASMCART_LUA's build/
 #   WASMCART_PACK the packer. Default resolves the npm 'wasmcart' package,
 #                 so CI can 'npm i wasmcart' instead of cloning it.
+#   CART_VERSION  the cart's version. Unset, the packer takes it from this
+#                 checkout's git tags (see the README, "Versions").
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
@@ -31,6 +33,6 @@ cp "$ENGINE" "$HERE/main.wasm"
 "$WASMCART_LUA/tools/gen-asset-index.sh" "$HERE/app" > /dev/null
 node "$WASMCART_PACK" \
   --wasm "$HERE/main.wasm" --assets "$HERE/app" \
-  --name "Eight Ball" --width 1920 --height 1080 \
+  --name "Eight Ball" --width 1920 --height 1080 ${CART_VERSION:+--version "$CART_VERSION"} \
   -o "$HERE/eightball.wasc" > /dev/null
 echo "packed $(du -h "$HERE/eightball.wasc" | cut -f1)"

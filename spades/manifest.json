@@ -1,6 +1,5 @@
 {
   "name": "spades",
-  "version": "1.0.0",
   "abi": 3,
   "entry": "main.wasm",
   "width": 1920,

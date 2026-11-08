@@ -34,7 +34,11 @@ jobs:
     name: pack .wasc
     runs-on: ubuntu-latest
     steps:
+      # The whole history and every tag: the carts' version comes from them
+      # (README, "Versions"), and a shallow clone has no tags.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -49,10 +53,29 @@ jobs:
       # fallback works on a dev box only because a node_modules happens to
       # sit somewhere above it; on a clean runner every cart failed with
       # "no packer at ... (npm i wasmcart)".
+      #
+      # wasmcart 0.39.0 is the first packer that versions a cart from git, and
+      # it comes from its GitHub tag until it is on npm.
       - name: install the packer
         run: |
-          npm i --no-save wasmcart
+          npm i --no-save --ignore-scripts "github:wasmcart/wasmcart#v0.39.0"
           echo "WASMCART_PACK=$PWD/node_modules/wasmcart/bin/wasmcart-pack.js" >> "$GITHUB_ENV"
+
+      # THE CARTS' VERSION, worked out ONCE, before any build.sh runs. The
+      # packer's rule: at a clean v<semver> tag, the tag (v1.2.3 gives 1.2.3);
+      # anywhere else <last tag>-dev.g<commit>. A build.sh regenerates the
+      # committed assets.index files, so a later game would see a changed
+      # tracked file and call itself a dev build; every build.sh passes
+      # CART_VERSION instead.
+      - name: the carts' version
+        run: |
+          v="$(node --input-type=module -e "
+            import { resolveCartVersion } from '$PWD/node_modules/wasmcart/src/cartVersion.js';
+            const r = resolveCartVersion({ dirs: [process.cwd()] });
+            if (r.error) { console.error(r.error); process.exit(1); }
+            process.stdout.write(r.version);")"
+          echo "carts are version $v"
+          echo "CART_VERSION=$v" >> "$GITHUB_ENV"
 
       # The ENGINE is a COMMITTED binary in the wasmcart-lua repo
       # (build/engine.wasm), not an npm package and not something CI builds.
@@ -69,8 +92,8 @@ jobs:
       - name: pack every cart
         run: |
           set -e
-          # Games with a build.sh are packed from source. The rest already
-          # ship a committed .wasc (the card games), which is copied as-is.
+          # Every game has a build.sh (the card games pack the engine they
+          # commit), so every cart is packed here with CART_VERSION.
           mkdir -p dist
           for d in */; do
             g="${d%/}"
@@ -84,6 +107,23 @@ jobs:
             for c in "$g"/*.wasc; do [ -f "$c" ] && cp "$c" dist/; done
           done
           ls -la dist/
+
+      # A release's carts must say the release's version. A cart built from a
+      # shallow clone, a dirty tree or an old packer says something else
+      # (0.0.0-dev..., 1.2.0-dev..., 1.0.0), and this stops it being attached.
+      - name: every cart carries the tag's version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          bad=0; n=0
+          for c in dist/*.wasc; do
+            got="$(unzip -p "$c" manifest.json | jq -r .version)"
+            echo "$c: $got"
+            n=$((n + 1))
+            [ "$got" = "$want" ] || { echo "::error::$c says version $got; the tag is $GITHUB_REF_NAME"; bad=1; }
+          done
+          [ "$n" -gt 0 ] || { echo "::error::no carts in dist/"; bad=1; }
+          exit $bad
 
       - uses: actions/upload-artifact@v4
         with:
@@ -103,6 +143,8 @@ jobs:
     # failure should not hide an APK failure (or vice versa).
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # wasmcart-android-lua is a separate repo holding the Android host and
       # the build script. It carries the engine as a submodule.
@@ -154,10 +196,29 @@ jobs:
       # fallback works on a dev box only because a node_modules happens to
       # sit somewhere above it; on a clean runner every cart failed with
       # "no packer at ... (npm i wasmcart)".
+      #
+      # wasmcart 0.39.0 is the first packer that versions a cart from git, and
+      # it comes from its GitHub tag until it is on npm.
       - name: install the packer
         run: |
-          npm i --no-save wasmcart
+          npm i --no-save --ignore-scripts "github:wasmcart/wasmcart#v0.39.0"
           echo "WASMCART_PACK=$PWD/node_modules/wasmcart/bin/wasmcart-pack.js" >> "$GITHUB_ENV"
+
+      # THE CARTS' VERSION, worked out ONCE, before any build.sh runs. The
+      # packer's rule: at a clean v<semver> tag, the tag (v1.2.3 gives 1.2.3);
+      # anywhere else <last tag>-dev.g<commit>. A build.sh regenerates the
+      # committed assets.index files, so a later game would see a changed
+      # tracked file and call itself a dev build; every build.sh passes
+      # CART_VERSION instead.
+      - name: the carts' version
+        run: |
+          v="$(node --input-type=module -e "
+            import { resolveCartVersion } from '$PWD/node_modules/wasmcart/src/cartVersion.js';
+            const r = resolveCartVersion({ dirs: [process.cwd()] });
+            if (r.error) { console.error(r.error); process.exit(1); }
+            process.stdout.write(r.version);")"
+          echo "carts are version $v"
+          echo "CART_VERSION=$v" >> "$GITHUB_ENV"
 
       # SDL and Lua are FETCHED, not vendored: fetch-deps.sh clones a
       # pinned SDL tag and downloads Lua 5.4.7, patching it exactly the

@@ -180,11 +180,10 @@ npx wasmcart jacksorbetter/jacksorbetter.wasc
 The carts are 1920x1080 and declare it in their own `conf.lua`, so they
 render the same on any engine build.
 
-The four card games ship a packed `.wasc` in the repo. **Eight Ball, Combo,
-Jewels and Minigolf are built from source** -- their `.wasc` and engine copy are
-build artifacts, not committed -- so run `./build.sh` in the game's
-directory first (it needs a `wasmcart-lua` checkout beside this repo, or
-`WASMCART_LUA=` pointing at one).
+Every release on GitHub carries every game's `.wasc` and APK. To play from
+a checkout, run `./build.sh` in the game's directory first: a cart is a build
+artifact, not committed (it needs a `wasmcart-lua` checkout beside this repo,
+or `WASMCART_LUA=` pointing at one).
 
 **On Android**, each game is its own app. `wasmcart-android-lua` turns a
 cart into an installable APK -- `./build-game-apk.sh <game>.wasc` -- using
@@ -244,9 +243,11 @@ mapped onto the scoreboard (wins loud, losses quiet, nothing shames).
   foreground)
 - `tools/` - headless drivers used to verify a change without a device
 - `<game>/main.wasm` - the wasmcart-lua engine the cart ships with.
-  Committed for the card games; a build artifact for any game with a
-  `build.sh` (bowling, combo, eightball, jewels, minigolf, pinochle)
-- `<game>/<game>.wasc` - the packed, playable cart, same split
+  Committed for the card games, which pin their own engine build; a build
+  artifact for the rest (bowling, combo, eightball, jewels, minigolf,
+  pinochle), copied from `wasmcart-lua`
+- `<game>/<game>.wasc` - the packed, playable cart, built by `build.sh`
+  (never committed)
 - `<game>/tools/` - per-game headless test drivers, where a game has them
 - `common/` - the shared card-table library and assets the games are
   built from (`common/sync.sh <game>` copies them into a cart)
@@ -257,14 +258,14 @@ mapped onto the scoreboard (wins loud, losses quiet, nothing shames).
 
 ## Rebuilding a cart
 
-The three built games have a `build.sh` that resolves the engine and packer
-for you, with no hardcoded paths:
+Every game has a `build.sh` that resolves the engine and packer for you,
+with no hardcoded paths:
 
 ```
 cd jewels && ./build.sh
 ```
 
-For the card games, or to pack by hand:
+To pack by hand:
 
 ```
 cd jacksorbetter
@@ -272,6 +273,16 @@ npx wasmcart pack --wasm main.wasm --assets app \
   --name "Jacks or Better" --width 1920 --height 1080 \
   -o jacksorbetter.wasc
 ```
+
+### Versions
+
+A cart's manifest carries its version, and the packer works it out from this
+checkout's git tags: at a release tag (`v1.2.3`, no changes to tracked files)
+the cart is `1.2.3`; anywhere else it is `<last tag>-dev.g<commit>`, so a
+cart built between releases never claims to be one. `CART_VERSION=1.2.3
+./build.sh` sets it by hand. The release workflow works the version out once
+from the tag, packs every cart with it, and refuses to attach a cart whose
+manifest says anything else.
 
 ### Testing a change
 
